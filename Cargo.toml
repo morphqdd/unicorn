@@ -1,0 +1,8 @@
+[package]
+name = "unicorn"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cranelift = { version = "0.122.0", features = [ 'jit', 'module', 'native' ] }
+peg = "0.8.5"
