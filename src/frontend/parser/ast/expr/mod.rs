@@ -16,5 +16,5 @@ pub enum Expr {
         ret_ty: Box<Expr>,
     },
     Assign((Box<Expr>, Box<Expr>), Box<Expr>),
-    GlobalDataAddr(Box<Expr>)
+    GlobalDataAddr(Box<Expr>),
 }
