@@ -1,2 +1,2 @@
 mod frontend;
-mod jit;
+pub mod jit;
