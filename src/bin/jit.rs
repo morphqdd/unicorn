@@ -1,11 +1,11 @@
 use anyhow::*;
 use unicorn::jit::Jit;
 
-const FOO_CODE: &str = "main: -> i64 { 20; }";
+const FOO_CODE: &str = "foo: a(i64) -> i64 { a; }";
 
 fn main() -> Result<()> {
     let jit = Jit::default();
-    let res: i64 = unsafe { run_code(jit, FOO_CODE, ())? };
+    let res: i64 = unsafe { run_code(jit, FOO_CODE, 10)? };
     println!("Result: {res}");
     Ok(())
 }

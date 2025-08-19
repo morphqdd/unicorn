@@ -110,7 +110,18 @@ impl<'a> FunctionTranslator<'a> {
             },
             Expr::Function { name, function_ty, body } => todo!(),
             Expr::FunctionType { params, ret_ty } => todo!(),
-            Expr::Assign(_, expr) => todo!(),
+            Expr::Assign((name, _), expr) => {
+                match *name {
+                    Expr::Ident(name) => {
+                        let val = self.translate_expr(*expr);
+                        let var = self.builder.declare_var(self.int);
+                        self.builder.def_var(var, val);
+                        self.variables.insert(name, var);
+                        val
+                    }
+                    _ => todo!()
+                }
+            },
             Expr::GlobalDataAddr(expr) => todo!(),
         }    
     } 
