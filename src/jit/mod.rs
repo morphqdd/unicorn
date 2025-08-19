@@ -1,8 +1,8 @@
-use std::{collections::HashMap, panic};
-use cranelift::{codegen::Context, jit::{JITBuilder, JITModule}, module::{default_libcall_names, DataDescription, Linkage, Module}, native, prelude::{settings, types, AbiParam, Block, Configurable, EntityRef, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value, Variable}};
+use std::{collections::HashMap, fs::File, panic};
+use cranelift::{codegen::Context, jit::{JITBuilder, JITModule}, module::{default_libcall_names, DataDescription, FuncId, Linkage, Module}, native, prelude::{settings, types, AbiParam, Block, Configurable, EntityRef, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value, Variable}};
 use anyhow::*;
 
-use crate::frontend::parser::{self, ast::expr::Expr};
+use crate::{frontend::parser::{self, ast::expr::Expr}, general_compiler::GeneralCompiler};
 
 
 pub struct Jit {
@@ -35,96 +35,47 @@ impl Default for Jit {
 }
 
 impl Jit {
-    pub fn compile(&mut self, input: &str) -> Result<*const u8> {
+    pub fn compile(self, input: &str) -> Result<*const u8> {
         let function = parser::function(input)?;
-        self.translate(function.clone())?;
-        
+        let mut jit = self.translate(function.clone())?;
+
         let Expr::Function { name, function_ty, body } = function else { panic!("Not a funtion") };
         let Expr::Ident(name) = *name else { panic!("Not a name!") };
 
-        let id = self
+        let id = jit
             .module
-            .declare_function(&name, Linkage::Export, &self.ctx.func.signature)?;
+            .declare_function(&name, Linkage::Export, &jit.ctx.func.signature)?;
 
-        self.module
-            .define_function(id, &mut self.ctx)?;
+        jit.module
+            .define_function(id, &mut jit.ctx)?;
 
-        self.module.clear_context(&mut self.ctx);
+        jit.module.clear_context(&mut jit.ctx);
 
-        self.module.finalize_definitions().unwrap();
-
-        let code = self.module.get_finalized_function(id);
-
+        jit.module.finalize_definitions().unwrap();
+        
+        let code = jit.module.get_finalized_function(id);
         Ok(code)
     }
 
-    fn translate(&mut self, expr: Expr) -> Result<()> {
-        match expr {
-            Expr::Function { name, function_ty, body } => match *function_ty {
-                Expr::FunctionType { params, ret_ty } => {
-                    // Set support type
-                    let int = self.module.target_config().pointer_type();
-                    
-                    // Set params of function
-                    for _p in params.iter() {
-                        self.ctx.func.signature.params.push(AbiParam::new(int));
-                    }
-                    
-                    // Set function return type
-                    self.ctx.func.signature.returns.push(AbiParam::new(int));
-                    
-                    let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
+}
 
+impl GeneralCompiler<JITModule> for Jit {
 
-                    // Create block for entry to function
-                    let entry_block = builder.create_block();
+    fn unwrap(self) -> (FunctionBuilderContext, Context, DataDescription, JITModule) {
+        (self.builder_ctx, self.ctx, self.data_description, self.module)
+    }
 
-                    // Since this is the entry block, add block parameters corresponding to
-                    // the function's parameters.
-                    builder.append_block_params_for_function_params(entry_block);
-                    
-                    // Tell the builder to emit code in this block.
-                    builder.switch_to_block(entry_block);
-
-                    // And, tell the builder that this block will have no further
-                    // predecessors. Since it's the entry block, it won't have any
-                    // predecessors.
-                    builder.seal_block(entry_block);
-                    let Expr::Ident(ret_ty) = *ret_ty else { panic!() };
-                    let vars = declare_variables(
-                        int, 
-                        &mut builder, 
-                        &params.iter()
-                            .map(|(expr, _)| match expr {
-                                Expr::Ident(name) => name.to_string(),
-                                _ => panic!("Not ident")
-                            }).collect::<Vec<_>>(), 
-                        &ret_ty, 
-                        &body, 
-                        entry_block
-                    );
-
-                    let mut trans = FunctionTranslator {
-                        int,
-                        builder,
-                        variables: vars,
-                        module: &mut self.module
-                    };
-
-                    for i in 0..body.len()-1 {
-                        trans.translate_expr(body[i].clone());
-                    }
-
-                    let val = trans.translate_expr(body[body.len()-1].clone());
-
-                    trans.builder.ins().return_(&[val]);
-
-                    trans.builder.finalize();
-                    Ok(())
-                }
-                _ => panic!("Translation for this function type is not support yet")
-            }
-            _ => panic!("Translation not support yet") 
+    fn from_general_compiler(
+        builder_ctx: FunctionBuilderContext,
+        ctx: Context,
+        data_description: DataDescription,
+        module: JITModule
+    ) -> Self where Self: Sized {
+        Self {
+            builder_ctx,
+            ctx,
+            data_description,
+            module
         }
     }
 }
