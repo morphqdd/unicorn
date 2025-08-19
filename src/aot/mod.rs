@@ -1,4 +1,4 @@
-use std::fs::{write};
+use std::{fs::write, path::{Path, PathBuf}};
 use anyhow::*;
 use cranelift::{codegen::Context, module::{default_libcall_names, DataDescription, Linkage, Module}, native, object::{ObjectBuilder, ObjectModule}, prelude::{settings, Configurable, FunctionBuilderContext}};
 
@@ -8,7 +8,7 @@ pub struct Aot {
     builder_ctx: FunctionBuilderContext,
     ctx: Context,
     data_description: DataDescription,
-    module: ObjectModule
+    module: ObjectModule,
 }
 
 impl Default for Aot {
@@ -28,13 +28,13 @@ impl Default for Aot {
             builder_ctx: FunctionBuilderContext::new(), 
             ctx: module.make_context(), 
             data_description: DataDescription::new(),
-            module
+            module,
         }
     }
 }
 
 impl Aot {
-    pub fn compile(self, input: &str) -> Result<()> {
+    pub fn compile<P: AsRef<Path>>(self, input: &str, path: P) -> Result<()> {
         let function = parser::function(input)?;
         let mut aot = self.translate(function.clone())?;
 
@@ -53,7 +53,7 @@ impl Aot {
         let obj = aot.module.finish();
         let obj_bytes = obj.emit()?;
 
-        write("object.o", obj_bytes)?;
+        write(path.as_ref().join("obj.o"), obj_bytes)?;
         Ok(())
     }
 
