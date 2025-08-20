@@ -11,17 +11,17 @@ parser! {
             { Expr::Function { name: Box::new(name), function_ty: Box::new(t), body } }
 
         rule function_ty() -> Expr
-            = _ params:(( i:expr() "(" _ t:ty() _ ")" { (i, t) }) ** " ")
+            = _ params:(( i:expr() "(" _ t:ty() _ ")" { (i, t) }) ** ([' ' | '\t' | '\n' | '\r']*))
             _ "->" _ ret_ty:(_ i:ident() _ {i}) { Expr::FunctionType { params, ret_ty: Box::new(ret_ty) } }
 
-        pub rule exprs() -> Vec<Expr> = _ n:(_ e:expr() _ "" _ {e})* _ { n }
+        pub rule exprs() -> Vec<Expr> = _ n:(_ e:expr() ** ([' ' | '\t' | '\n' | '\r']*) _ {e}) _ { n }
         rule expr() -> Expr = function() / assign() / call() / ident() / literal()
         rule assign() -> Expr
             = _ "let" _ i:ident() _ ":" _ t:ty() _ "=" _ e:expr() _
             { Expr::Assign((Box::new(i), Box::new(t)), Box::new(e)) }
         rule ty() -> Expr = function_ty() / ident()
         rule call() -> Expr
-            = _ i:ident() _ "{" _ args:((e:expr() { e }) ** " ") _ "}" _
+            = _ i:ident() _ "{" _ args:((e:expr() { e }) ** ([' ' | '\t' | '\n' | '\r']*)) _ "}" _
             { Expr::Call { ident: Box::new(i), args } }
 
         rule ident() -> Expr
@@ -32,7 +32,7 @@ parser! {
             = n:$(['0'..='9']+) { Expr::Lit(n.to_owned()) }
             / "&" i:ident() { Expr::GlobalDataAddr(Box::new(i)) }
 
-        rule _() = quiet!{[' ' | '\t' | '\n' ]*}
+        rule _() = quiet!{[' ' | '\t' | '\n' | '\r']*}
     }
 }
 

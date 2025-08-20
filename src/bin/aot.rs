@@ -5,11 +5,14 @@ use unicorn::aot::Aot;
 
 const FOO_CODE: &str = r#"
         main: -> i64 {
-            foo {}
+            foo {
+                20
+                30
+            }
         }
 
-        foo: -> i64 {
-            20
+        foo: a(i64) b(i64) -> i64 {
+            b
         }
     "#;
 
