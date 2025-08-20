@@ -1,3 +1,7 @@
+use crate::{
+    frontend::parser::{self, ast::expr::Expr},
+    general_compiler::GeneralCompiler,
+};
 use anyhow::*;
 use cranelift::{
     codegen::Context,
@@ -9,10 +13,6 @@ use cranelift::{
 use std::{
     fs::write,
     path::{Path, PathBuf},
-};
-use crate::{
-    frontend::parser::{self, ast::expr::Expr},
-    general_compiler::GeneralCompiler,
 };
 
 pub struct Aot {

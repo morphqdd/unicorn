@@ -3,8 +3,7 @@ use std::{fs, path::PathBuf, process::Command};
 use anyhow::*;
 use unicorn::aot::Aot;
 
-const FOO_CODE: &str =
-    r#"
+const FOO_CODE: &str = r#"
         main: -> i64 {
             foo {}
         }

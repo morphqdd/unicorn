@@ -1,4 +1,9 @@
+use crate::{
+    frontend::parser::{self, ast::expr::Expr},
+    general_compiler::GeneralCompiler,
+};
 use anyhow::*;
+use cranelift::module::FuncOrDataId;
 use cranelift::{
     codegen::Context,
     jit::{JITBuilder, JITModule},
@@ -10,11 +15,6 @@ use cranelift::{
     },
 };
 use std::{collections::HashMap, fs::File, panic};
-use cranelift::module::FuncOrDataId;
-use crate::{
-    frontend::parser::{self, ast::expr::Expr},
-    general_compiler::GeneralCompiler,
-};
 
 pub struct Jit {
     builder_ctx: FunctionBuilderContext,
@@ -51,9 +51,9 @@ impl Jit {
 
         jit.module.finalize_definitions().unwrap();
 
-        let FuncOrDataId::Func(id) =  jit.module.get_name("main")
-            .expect("Main not found")
-            else { panic!("Not a func") };
+        let FuncOrDataId::Func(id) = jit.module.get_name("main").expect("Main not found") else {
+            panic!("Not a func")
+        };
 
         let code = jit.module.get_finalized_function(id);
         Ok(code)

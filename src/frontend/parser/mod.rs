@@ -164,7 +164,7 @@ mod test {
                     Expr::Function {
                         name: Box::new(Expr::Ident("b".into())),
                         function_ty: Box::new(Expr::FunctionType {
-                            params: vec![(Expr::Ident("a".into()), Expr::Ident("i32".into())), ],
+                            params: vec![(Expr::Ident("a".into()), Expr::Ident("i32".into())),],
                             ret_ty: Box::new(Expr::Ident("nil".into()))
                         }),
                         body: vec![]
@@ -191,7 +191,8 @@ mod test {
                     b: a(i32) b(i32) -> i32 {
                         sum { a b }
                     }
-                "#),
+                "#
+            ),
             Ok(vec![
                 Expr::Function {
                     name: Box::new(Expr::Ident("main".into())),
@@ -201,13 +202,13 @@ mod test {
                     }),
                     body: vec![
                         Expr::Assign(
-                            (Box::new(Expr::Ident("c".into())), Box::new(Expr::Ident("i32".into()))),
+                            (
+                                Box::new(Expr::Ident("c".into())),
+                                Box::new(Expr::Ident("i32".into()))
+                            ),
                             Box::new(Expr::Call {
                                 ident: Box::new(Expr::Ident("b".into())),
-                                args: vec![
-                                    Expr::Lit("20".into()),
-                                    Expr::Lit("30".into())
-                                ]
+                                args: vec![Expr::Lit("20".into()), Expr::Lit("30".into())]
                             })
                         ),
                         Expr::Ident("nil".into())
@@ -222,15 +223,10 @@ mod test {
                         ],
                         ret_ty: Box::new(Expr::Ident("i32".into()))
                     }),
-                    body: vec![
-                        Expr::Call {
-                            ident: Box::new(Expr::Ident("sum".into())),
-                            args: vec![
-                                Expr::Ident("a".into()),
-                                Expr::Ident("b".into())
-                            ]
-                        }
-                    ],
+                    body: vec![Expr::Call {
+                        ident: Box::new(Expr::Ident("sum".into())),
+                        args: vec![Expr::Ident("a".into()), Expr::Ident("b".into())]
+                    }],
                 }
             ])
         )

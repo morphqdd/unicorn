@@ -1,4 +1,6 @@
+use crate::frontend::parser::ast::expr::Expr;
 use anyhow::*;
+use cranelift::module::{FuncOrDataId, Linkage};
 use cranelift::{
     codegen::Context,
     module::{DataDescription, Module},
@@ -8,8 +10,6 @@ use cranelift::{
     },
 };
 use std::{collections::HashMap, ops::DerefMut};
-use cranelift::module::{FuncOrDataId, Linkage};
-use crate::frontend::parser::ast::expr::Expr;
 
 pub trait GeneralCompiler<T: Module> {
     fn from_general_compiler(
@@ -96,10 +96,12 @@ pub trait GeneralCompiler<T: Module> {
 
                         trans.builder.finalize();
 
-                        let Expr::Ident(name) = *name else { panic!("Not a name!") };
+                        let Expr::Ident(name) = *name else {
+                            panic!("Not a name!")
+                        };
 
-                        let id = module
-                            .declare_function(&name, Linkage::Export, &ctx.func.signature)?;
+                        let id =
+                            module.declare_function(&name, Linkage::Export, &ctx.func.signature)?;
 
                         module.define_function(id, &mut ctx)?;
 
@@ -133,38 +135,33 @@ impl<'a> FunctionTranslator<'a> {
                 let var = self.variables.get(&name).expect("Variable not define");
                 self.builder.use_var(*var)
             }
-            Expr::Call { ident, args } => {
-               match *ident {
-                   Expr::Ident(name) => {
-                       let mut sig = self.module.make_signature();
+            Expr::Call { ident, args } => match *ident {
+                Expr::Ident(name) => {
+                    let mut sig = self.module.make_signature();
 
-                       for _arg in &args {
-                           sig.params.push(AbiParam::new(self.int))
-                       }
+                    for _arg in &args {
+                        sig.params.push(AbiParam::new(self.int))
+                    }
 
-                       sig.returns.push(AbiParam::new(self.int));
+                    sig.returns.push(AbiParam::new(self.int));
 
-                       let callee = self
-                           .module
-                           .declare_function(&name, Linkage::Import, &sig)
-                           .expect("Problem declaration function");
+                    let callee = self
+                        .module
+                        .declare_function(&name, Linkage::Import, &sig)
+                        .expect("Problem declaration function");
 
-                       let local_callee = self
-                           .module
-                           .declare_func_in_func(callee, self.builder.func);
+                    let local_callee = self.module.declare_func_in_func(callee, self.builder.func);
 
+                    let mut arg_values = vec![];
 
-                       let mut arg_values = vec![];
+                    for arg in args {
+                        arg_values.push(self.translate_expr(arg))
+                    }
 
-                       for arg in args {
-                           arg_values.push(self.translate_expr(arg))
-                       }
-
-                       let call = self.builder.ins().call(local_callee, &arg_values);
-                       *self.builder.inst_results(call).get(0).unwrap()
-                   }
-                   _ => todo!()
-               }
+                    let call = self.builder.ins().call(local_callee, &arg_values);
+                    *self.builder.inst_results(call).get(0).unwrap()
+                }
+                _ => todo!(),
             },
             Expr::Lit(lit) => {
                 let imm: i32 = lit.parse().unwrap();
