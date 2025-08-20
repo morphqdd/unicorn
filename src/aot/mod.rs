@@ -10,7 +10,6 @@ use std::{
     fs::write,
     path::{Path, PathBuf},
 };
-
 use crate::{
     frontend::parser::{self, ast::expr::Expr},
     general_compiler::GeneralCompiler,
@@ -47,27 +46,7 @@ impl Default for Aot {
 impl Aot {
     pub fn compile<P: AsRef<Path>>(self, input: &str, path: P) -> Result<()> {
         let function = parser::function(input)?;
-        let mut aot = self.translate(function.clone())?;
-
-        let Expr::Function {
-            name,
-            function_ty,
-            body,
-        } = function
-        else {
-            panic!("Not a function")
-        };
-        let Expr::Ident(name) = *name else {
-            panic!("Not a name!")
-        };
-
-        let id = aot
-            .module
-            .declare_function(&name, Linkage::Export, &aot.ctx.func.signature)?;
-
-        aot.module.define_function(id, &mut aot.ctx)?;
-
-        aot.module.clear_context(&mut aot.ctx);
+        let aot = self.translate(function.clone())?;
 
         let obj = aot.module.finish();
         let obj_bytes = obj.emit()?;

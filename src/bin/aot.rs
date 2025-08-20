@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf, process::Command};
 use anyhow::*;
 use unicorn::aot::Aot;
 
-const FOO_CODE: &str = "main: -> i64 { 15; }";
+const FOO_CODE: &str = "main: -> i64 { 15 }";
 
 fn main() -> Result<()> {
     let out = PathBuf::from("build");

@@ -10,7 +10,7 @@ use cranelift::{
     },
 };
 use std::{collections::HashMap, fs::File, panic};
-
+use cranelift::module::FuncOrDataId;
 use crate::{
     frontend::parser::{self, ast::expr::Expr},
     general_compiler::GeneralCompiler,
@@ -47,29 +47,14 @@ impl Default for Jit {
 impl Jit {
     pub fn compile(self, input: &str) -> Result<*const u8> {
         let function = parser::function(input)?;
-        let mut jit = self.translate(function.clone())?;
+        let mut jit: Jit = self.translate(function.clone())?;
 
-        let Expr::Function {
-            name,
-            function_ty,
-            body,
-        } = function
-        else {
-            panic!("Not a funtion")
-        };
-        let Expr::Ident(name) = *name else {
-            panic!("Not a name!")
-        };
-
-        let id = jit
-            .module
-            .declare_function(&name, Linkage::Export, &jit.ctx.func.signature)?;
-
-        jit.module.define_function(id, &mut jit.ctx)?;
-
-        jit.module.clear_context(&mut jit.ctx);
-
+        let Expr::Function {name, ..} = function else { panic!("Not a func") };
+        let Expr::Ident(name) = *name else { panic!("Not a name") };
         jit.module.finalize_definitions().unwrap();
+
+        let FuncOrDataId::Func(id) =  jit.module.get_name(&name).unwrap()
+            else { panic!("Not a func") };
 
         let code = jit.module.get_finalized_function(id);
         Ok(code)
@@ -77,15 +62,6 @@ impl Jit {
 }
 
 impl GeneralCompiler<JITModule> for Jit {
-    fn unwrap(self) -> (FunctionBuilderContext, Context, DataDescription, JITModule) {
-        (
-            self.builder_ctx,
-            self.ctx,
-            self.data_description,
-            self.module,
-        )
-    }
-
     fn from_general_compiler(
         builder_ctx: FunctionBuilderContext,
         ctx: Context,
@@ -101,5 +77,14 @@ impl GeneralCompiler<JITModule> for Jit {
             data_description,
             module,
         }
+    }
+
+    fn unwrap(self) -> (FunctionBuilderContext, Context, DataDescription, JITModule) {
+        (
+            self.builder_ctx,
+            self.ctx,
+            self.data_description,
+            self.module,
+        )
     }
 }

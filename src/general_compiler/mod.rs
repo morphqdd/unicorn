@@ -8,7 +8,7 @@ use cranelift::{
     },
 };
 use std::{collections::HashMap, ops::DerefMut};
-
+use cranelift::module::Linkage;
 use crate::frontend::parser::ast::expr::Expr;
 
 pub trait GeneralCompiler<T: Module> {
@@ -94,6 +94,16 @@ pub trait GeneralCompiler<T: Module> {
                     trans.builder.ins().return_(&[val]);
 
                     trans.builder.finalize();
+                    
+                    let Expr::Ident(name) = *name else { panic!("Not a name!") };
+
+                    let id = module
+                        .declare_function(&name, Linkage::Export, &ctx.func.signature)?;
+
+                    module.define_function(id, &mut ctx)?;
+
+                    module.clear_context(&mut ctx);
+                    
                     Ok(Self::from_general_compiler(
                         builder_ctx,
                         ctx,

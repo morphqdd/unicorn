@@ -1,7 +1,7 @@
 use anyhow::*;
 use unicorn::jit::Jit;
 
-const FOO_CODE: &str = "foo: a(i64) -> i64 { a; }";
+const FOO_CODE: &str = "foo: a(i64) -> i64 { a }";
 
 fn main() -> Result<()> {
     let jit = Jit::default();
