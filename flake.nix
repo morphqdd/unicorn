@@ -32,7 +32,7 @@
       '';
 
       cargoClippy = pkgs.writeShellScriptBin "cargo-clippy" ''
-     export CARGO_TARGET_DIR=./target
+        export CARGO_TARGET_DIR=./target
         exec ${pkgs.cargo}/bin/cargo clippy --manifest-path ./Cargo.toml "$@"
       '';
 

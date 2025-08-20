@@ -14,9 +14,10 @@ fn main() -> Result<()> {
     aot.compile(FOO_CODE, &out)?;
     let linker = Command::new("cc")
         .args([
-            &out.join("obj.o").display().to_string(), 
-            "-o", 
-            &out.join("aot-test").display().to_string()])
+            &out.join("obj.o").display().to_string(),
+            "-o",
+            &out.join("aot-test").display().to_string(),
+        ])
         .status()?;
     if !linker.success() {
         bail!("Linker failed with code: {}", linker.code().unwrap())

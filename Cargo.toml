@@ -7,4 +7,3 @@ edition = "2024"
 cranelift = { version = "0.122.0", features = [ 'jit', 'module', 'native', 'object' ] }
 peg = "0.8.5"
 anyhow = "1"
-cc = "1"
