@@ -8,7 +8,7 @@ use cranelift::{
     },
 };
 use std::{collections::HashMap, ops::DerefMut};
-use cranelift::module::Linkage;
+use cranelift::module::{FuncOrDataId, Linkage};
 use crate::frontend::parser::ast::expr::Expr;
 
 pub trait GeneralCompiler<T: Module> {
@@ -21,100 +21,101 @@ pub trait GeneralCompiler<T: Module> {
     where
         Self: Sized;
     fn unwrap(self) -> (FunctionBuilderContext, Context, DataDescription, T);
-    fn translate(self, expr: Expr) -> Result<Self>
+    fn translate(self, exprs: Vec<Expr>) -> Result<Self>
     where
         Self: Sized,
     {
-        match expr {
-            Expr::Function {
-                name,
-                function_ty,
-                body,
-            } => match *function_ty {
-                Expr::FunctionType { params, ret_ty } => {
-                    let (mut builder_ctx, mut ctx, data_description, mut module) = self.unwrap();
-                    // Set support type
-                    let int = module.target_config().pointer_type();
+        let (mut builder_ctx, mut ctx, data_description, mut module) = self.unwrap();
+        for expr in exprs {
+            match expr {
+                Expr::Function {
+                    name,
+                    function_ty,
+                    body,
+                } => match *function_ty {
+                    Expr::FunctionType { params, ret_ty } => {
+                        // Set support type
+                        let int = module.target_config().pointer_type();
 
-                    // Set params of function
-                    for _p in params.iter() {
-                        ctx.func.signature.params.push(AbiParam::new(int));
+                        // Set params of function
+                        for _p in params.iter() {
+                            ctx.func.signature.params.push(AbiParam::new(int));
+                        }
+
+                        // Set function return type
+                        ctx.func.signature.returns.push(AbiParam::new(int));
+
+                        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+
+                        // Create block for entry to function
+                        let entry_block = builder.create_block();
+
+                        // Since this is the entry block, add block parameters corresponding to
+                        // the function's parameters.
+                        builder.append_block_params_for_function_params(entry_block);
+
+                        // Tell the builder to emit code in this block.
+                        builder.switch_to_block(entry_block);
+
+                        // And, tell the builder that this block will have no further
+                        // predecessors. Since it's the entry block, it won't have any
+                        // predecessors.
+                        builder.seal_block(entry_block);
+                        let Expr::Ident(ret_ty) = *ret_ty else {
+                            panic!()
+                        };
+                        let vars = declare_variables(
+                            int,
+                            &mut builder,
+                            &params
+                                .iter()
+                                .map(|(expr, _)| match expr {
+                                    Expr::Ident(name) => name.to_string(),
+                                    _ => panic!("Not ident"),
+                                })
+                                .collect::<Vec<_>>(),
+                            &ret_ty,
+                            &body,
+                            entry_block,
+                        );
+
+                        let mut trans = FunctionTranslator {
+                            int,
+                            builder,
+                            variables: vars,
+                            module: &mut module,
+                        };
+
+                        for i in 0..body.len() - 1 {
+                            trans.translate_expr(body[i].clone());
+                        }
+
+                        let val = trans.translate_expr(body[body.len() - 1].clone());
+
+                        trans.builder.ins().return_(&[val]);
+
+                        trans.builder.finalize();
+
+                        let Expr::Ident(name) = *name else { panic!("Not a name!") };
+
+                        let id = module
+                            .declare_function(&name, Linkage::Export, &ctx.func.signature)?;
+
+                        module.define_function(id, &mut ctx)?;
+
+                        module.clear_context(&mut ctx);
                     }
-
-                    // Set function return type
-                    ctx.func.signature.returns.push(AbiParam::new(int));
-
-                    let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
-
-                    // Create block for entry to function
-                    let entry_block = builder.create_block();
-
-                    // Since this is the entry block, add block parameters corresponding to
-                    // the function's parameters.
-                    builder.append_block_params_for_function_params(entry_block);
-
-                    // Tell the builder to emit code in this block.
-                    builder.switch_to_block(entry_block);
-
-                    // And, tell the builder that this block will have no further
-                    // predecessors. Since it's the entry block, it won't have any
-                    // predecessors.
-                    builder.seal_block(entry_block);
-                    let Expr::Ident(ret_ty) = *ret_ty else {
-                        panic!()
-                    };
-                    let vars = declare_variables(
-                        int,
-                        &mut builder,
-                        &params
-                            .iter()
-                            .map(|(expr, _)| match expr {
-                                Expr::Ident(name) => name.to_string(),
-                                _ => panic!("Not ident"),
-                            })
-                            .collect::<Vec<_>>(),
-                        &ret_ty,
-                        &body,
-                        entry_block,
-                    );
-
-                    let mut trans = FunctionTranslator {
-                        int,
-                        builder,
-                        variables: vars,
-                        module: &mut module,
-                    };
-
-                    for i in 0..body.len() - 1 {
-                        trans.translate_expr(body[i].clone());
-                    }
-
-                    let val = trans.translate_expr(body[body.len() - 1].clone());
-
-                    trans.builder.ins().return_(&[val]);
-
-                    trans.builder.finalize();
-                    
-                    let Expr::Ident(name) = *name else { panic!("Not a name!") };
-
-                    let id = module
-                        .declare_function(&name, Linkage::Export, &ctx.func.signature)?;
-
-                    module.define_function(id, &mut ctx)?;
-
-                    module.clear_context(&mut ctx);
-                    
-                    Ok(Self::from_general_compiler(
-                        builder_ctx,
-                        ctx,
-                        data_description,
-                        module,
-                    ))
-                }
-                _ => panic!("Translation for this function type is not support yet"),
-            },
-            _ => panic!("Translation not support yet"),
+                    _ => panic!("Translation for this function type is not support yet"),
+                },
+                _ => panic!("Translation not support yet"),
+            }
         }
+        Ok(Self::from_general_compiler(
+            builder_ctx,
+            ctx,
+            data_description,
+            module,
+        ))
     }
 }
 
@@ -132,7 +133,39 @@ impl<'a> FunctionTranslator<'a> {
                 let var = self.variables.get(&name).expect("Variable not define");
                 self.builder.use_var(*var)
             }
-            Expr::Call { ident, args } => todo!(),
+            Expr::Call { ident, args } => {
+               match *ident {
+                   Expr::Ident(name) => {
+                       let mut sig = self.module.make_signature();
+
+                       for _arg in &args {
+                           sig.params.push(AbiParam::new(self.int))
+                       }
+
+                       sig.returns.push(AbiParam::new(self.int));
+
+                       let callee = self
+                           .module
+                           .declare_function(&name, Linkage::Import, &sig)
+                           .expect("Problem declaration function");
+
+                       let local_callee = self
+                           .module
+                           .declare_func_in_func(callee, self.builder.func);
+
+
+                       let mut arg_values = vec![];
+
+                       for arg in args {
+                           arg_values.push(self.translate_expr(arg))
+                       }
+
+                       let call = self.builder.ins().call(local_callee, &arg_values);
+                       *self.builder.inst_results(call).get(0).unwrap()
+                   }
+                   _ => todo!()
+               }
+            },
             Expr::Lit(lit) => {
                 let imm: i32 = lit.parse().unwrap();
                 self.builder.ins().iconst(self.int, i64::from(imm))

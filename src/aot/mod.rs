@@ -45,8 +45,8 @@ impl Default for Aot {
 
 impl Aot {
     pub fn compile<P: AsRef<Path>>(self, input: &str, path: P) -> Result<()> {
-        let function = parser::function(input)?;
-        let aot = self.translate(function.clone())?;
+        let exprs = parser::exprs(input)?;
+        let aot = self.translate(exprs)?;
 
         let obj = aot.module.finish();
         let obj_bytes = obj.emit()?;

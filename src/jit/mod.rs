@@ -46,14 +46,13 @@ impl Default for Jit {
 
 impl Jit {
     pub fn compile(self, input: &str) -> Result<*const u8> {
-        let function = parser::function(input)?;
-        let mut jit: Jit = self.translate(function.clone())?;
+        let exprs = parser::exprs(input)?;
+        let mut jit: Jit = self.translate(exprs)?;
 
-        let Expr::Function {name, ..} = function else { panic!("Not a func") };
-        let Expr::Ident(name) = *name else { panic!("Not a name") };
         jit.module.finalize_definitions().unwrap();
 
-        let FuncOrDataId::Func(id) =  jit.module.get_name(&name).unwrap()
+        let FuncOrDataId::Func(id) =  jit.module.get_name("main")
+            .expect("Main not found")
             else { panic!("Not a func") };
 
         let code = jit.module.get_finalized_function(id);
