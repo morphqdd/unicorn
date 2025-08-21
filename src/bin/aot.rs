@@ -5,14 +5,12 @@ use unicorn::aot::Aot;
 
 const FOO_CODE: &str = r#"
         main: -> i64 {
-            foo {
-                20
-                30
-            }
+            let a: i64 = foo { 20 30 }
+            stdprint { a }
         }
 
         foo: a(i64) b(i64) -> i64 {
-            b
+            add { a b }
         }
     "#;
 
@@ -25,7 +23,9 @@ fn main() -> Result<()> {
     aot.compile(FOO_CODE, &out)?;
     let linker = Command::new("cc")
         .args([
+            "-Wl,-s",
             &out.join("obj.o").display().to_string(),
+            &out.join("runtime.o").display().to_string(),
             "-o",
             &out.join("aot-test").display().to_string(),
         ])

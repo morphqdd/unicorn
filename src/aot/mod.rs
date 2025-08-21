@@ -14,6 +14,7 @@ use std::{
     fs::write,
     path::{Path, PathBuf},
 };
+use cranelift::prelude::{types, AbiParam};
 
 pub struct Aot {
     builder_ctx: FunctionBuilderContext,
@@ -25,6 +26,7 @@ pub struct Aot {
 impl Default for Aot {
     fn default() -> Self {
         let mut flag_builder = settings::builder();
+        flag_builder.set("opt_level", "speed_and_size").unwrap();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
         let isa_builder =

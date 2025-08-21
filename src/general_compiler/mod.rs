@@ -11,6 +11,8 @@ use cranelift::{
 };
 use std::{collections::HashMap, ops::DerefMut};
 
+const REDUCTIONS_LIMIT: i64 = 2;
+
 pub trait GeneralCompiler<T: Module> {
     fn from_general_compiler(
         builder_ctx: FunctionBuilderContext,
@@ -26,92 +28,135 @@ pub trait GeneralCompiler<T: Module> {
         Self: Sized,
     {
         let (mut builder_ctx, mut ctx, data_description, mut module) = self.unwrap();
-        for expr in exprs {
-            match expr {
-                Expr::Function {
-                    name,
-                    function_ty,
-                    body,
-                } => match *function_ty {
-                    Expr::FunctionType { params, ret_ty } => {
-                        // Set support type
-                        let int = module.target_config().pointer_type();
 
-                        // Set params of function
-                        for _p in params.iter() {
-                            ctx.func.signature.params.push(AbiParam::new(int));
-                        }
+        let int= module.target_config().pointer_type();
+        ctx.func.signature.returns.push(AbiParam::new(int));
 
-                        // Set function return type
-                        ctx.func.signature.returns.push(AbiParam::new(int));
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
 
-                        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
 
-                        // Create block for entry to function
-                        let entry_block = builder.create_block();
+        let reductions_variable = builder.declare_var(int);
+        let default_reductions = builder.ins().iconst(int, 0);
+        builder.def_var(reductions_variable, default_reductions);
+        let the_one = builder.ins().iconst(int, 1);
+        let current_reductions = builder.use_var(reductions_variable);
+        let the_new_val = builder.ins().iadd(current_reductions,the_one);
+        builder.def_var(reductions_variable, the_new_val);
 
-                        // Since this is the entry block, add block parameters corresponding to
-                        // the function's parameters.
-                        builder.append_block_params_for_function_params(entry_block);
+        let mut sig = module.make_signature();
 
-                        // Tell the builder to emit code in this block.
-                        builder.switch_to_block(entry_block);
+        sig.params.push(AbiParam::new(int));
+        sig.returns.push(AbiParam::new(int));
 
-                        // And, tell the builder that this block will have no further
-                        // predecessors. Since it's the entry block, it won't have any
-                        // predecessors.
-                        builder.seal_block(entry_block);
-                        let Expr::Ident(ret_ty) = *ret_ty else {
-                            panic!()
-                        };
-                        let vars = declare_variables(
-                            int,
-                            &mut builder,
-                            &params
-                                .iter()
-                                .map(|(expr, _)| match expr {
-                                    Expr::Ident(name) => name.to_string(),
-                                    _ => panic!("Not ident"),
-                                })
-                                .collect::<Vec<_>>(),
-                            &ret_ty,
-                            &body,
-                            entry_block,
-                        );
+        let callee = module
+            .declare_function("stdprint", Linkage::Import, &sig)?;
 
-                        let mut trans = FunctionTranslator {
-                            int,
-                            builder,
-                            variables: vars,
-                            module: &mut module,
-                        };
+        let local_callee = module.declare_func_in_func(callee, builder.func);
 
-                        for i in 0..body.len() - 1 {
-                            trans.translate_expr(body[i].clone());
-                        }
+        let arg = builder.use_var(reductions_variable);
 
-                        let val = trans.translate_expr(body[body.len() - 1].clone());
+        let call = builder.ins().call(local_callee, &[arg]);
+        let result: Value = *builder.inst_results(call).get(0).unwrap();
 
-                        trans.builder.ins().return_(&[val]);
+        builder.ins().return_(&[result]);
+        builder.finalize();
 
-                        trans.builder.finalize();
+        let id =
+            module.declare_function("main", Linkage::Export, &ctx.func.signature)?;
 
-                        let Expr::Ident(name) = *name else {
-                            panic!("Not a name!")
-                        };
+        module.define_function(id, &mut ctx)?;
 
-                        let id =
-                            module.declare_function(&name, Linkage::Export, &ctx.func.signature)?;
+        module.clear_context(&mut ctx);
 
-                        module.define_function(id, &mut ctx)?;
-
-                        module.clear_context(&mut ctx);
-                    }
-                    _ => panic!("Translation for this function type is not support yet"),
-                },
-                _ => panic!("Translation not support yet"),
-            }
-        }
+        // for expr in exprs {
+        //     match expr {
+        //         Expr::Function {
+        //             name,
+        //             function_ty,
+        //             body,
+        //         } => match *function_ty {
+        //             Expr::FunctionType { params, ret_ty } => {
+        //                 // Set support type
+        //                 let int = module.target_config().pointer_type();
+        //
+        //                 // Set params of function
+        //                 for _p in params.iter() {
+        //                     ctx.func.signature.params.push(AbiParam::new(int));
+        //                 }
+        //
+        //                 // Set function return type
+        //                 ctx.func.signature.returns.push(AbiParam::new(int));
+        //
+        //                 let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        //
+        //                 // Create block for entry to function
+        //                 let entry_block = builder.create_block();
+        //                 // Since this is the entry block, add block parameters corresponding to
+        //                 // the function's parameters.
+        //                 builder.append_block_params_for_function_params(entry_block);
+        //
+        //                 // Tell the builder to emit code in this block.
+        //                 builder.switch_to_block(entry_block);
+        //
+        //                 // And, tell the builder that this block will have no further
+        //                 // predecessors. Since it's the entry block, it won't have any
+        //                 // predecessors.
+        //                 builder.seal_block(entry_block);
+        //                 let Expr::Ident(ret_ty) = *ret_ty else {
+        //                     panic!()
+        //                 };
+        //                 let vars = declare_variables(
+        //                     int,
+        //                     &mut builder,
+        //                     &params
+        //                         .iter()
+        //                         .map(|(expr, _)| match expr {
+        //                             Expr::Ident(name) => name.to_string(),
+        //                             _ => panic!("Not ident"),
+        //                         })
+        //                         .collect::<Vec<_>>(),
+        //                     &ret_ty,
+        //                     &body,
+        //                     entry_block,
+        //                 );
+        //
+        //                 let mut trans = FunctionTranslator {
+        //                     int,
+        //                     builder,
+        //                     variables: vars,
+        //                     module: &mut module,
+        //                 };
+        //
+        //                 for i in 0..body.len() - 1 {
+        //                     trans.translate_expr(body[i].clone());
+        //                 }
+        //
+        //                 let val = trans.translate_expr(body[body.len() - 1].clone());
+        //
+        //                 trans.builder.ins().return_(&[val]);
+        //
+        //                 trans.builder.finalize();
+        //
+        //                 let Expr::Ident(name) = *name else {
+        //                     panic!("Not a name!")
+        //                 };
+        //
+        //                 let id =
+        //                     module.declare_function(&name, Linkage::Export, &ctx.func.signature)?;
+        //
+        //                 module.define_function(id, &mut ctx)?;
+        //
+        //                 module.clear_context(&mut ctx);
+        //             }
+        //             _ => panic!("Translation for this function type is not support yet"),
+        //         },
+        //         _ => panic!("Translation not support yet"),
+        //     }
+        // }
         Ok(Self::from_general_compiler(
             builder_ctx,
             ctx,

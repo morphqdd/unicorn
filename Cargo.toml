@@ -3,7 +3,10 @@ name = "unicorn"
 version = "0.1.0"
 edition = "2024"
 
+[dev-dependencies]
+criterion = { version = "0.7.0", features = ['html_reports']}
+
 [dependencies]
-cranelift = { version = "0.122.0", features = [ 'jit', 'module', 'native', 'object' ] }
+cranelift = { version = "0.123.0", features = [ 'jit', 'module', 'native', 'object' ] }
 peg = "0.8.5"
 anyhow = "1"
