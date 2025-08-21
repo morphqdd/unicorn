@@ -10,6 +10,8 @@ use cranelift::{
     },
 };
 use std::{collections::HashMap, ops::DerefMut};
+use cranelift::codegen::ir::BlockArg;
+use cranelift::prelude::IntCC;
 
 const REDUCTIONS_LIMIT: i64 = 2;
 
@@ -39,13 +41,53 @@ pub trait GeneralCompiler<T: Module> {
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
 
+        let reductions_limit = builder.declare_var(int);
         let reductions_variable = builder.declare_var(int);
+        let limit_of_reductions = builder.ins().iconst(int, REDUCTIONS_LIMIT);
         let default_reductions = builder.ins().iconst(int, 0);
+        builder.def_var(reductions_limit, limit_of_reductions);
         builder.def_var(reductions_variable, default_reductions);
+
+        let cond_block = builder.create_block();
+        builder.ins().jump(cond_block, &[]);
+        builder.switch_to_block(cond_block);
+
+        let limit_of_reductions = builder.use_var(reductions_limit);
+        let current_reductions = builder.use_var(reductions_variable);
+        let condition_value = builder.ins().icmp(IntCC::Equal, current_reductions, limit_of_reductions);
+
+        let then_block = builder.create_block();
+        let else_block = builder.create_block();
+        let merge_block = builder.create_block();
+
+        builder.append_block_param(merge_block, int);
+
+        builder
+            .ins()
+            .brif(
+                condition_value,
+                then_block, &[],
+                else_block, &[]
+            );
+
+        builder.switch_to_block(then_block);
+        builder.seal_block(then_block);
+        let then_result = builder.ins().iconst(int, 10);
+        builder.def_var(reductions_variable, default_reductions);
+        builder.ins().jump(merge_block, &[BlockArg::Value(then_result)]);
+
+        builder.switch_to_block(else_block);
+        builder.seal_block(else_block);
+        let else_result = builder.ins().iconst(int, 20);
         let the_one = builder.ins().iconst(int, 1);
         let current_reductions = builder.use_var(reductions_variable);
         let the_new_val = builder.ins().iadd(current_reductions,the_one);
         builder.def_var(reductions_variable, the_new_val);
+        builder.ins().jump(merge_block, &[BlockArg::Value(else_result)]);
+
+
+        builder.switch_to_block(merge_block);
+        builder.seal_block(merge_block);
 
         let mut sig = module.make_signature();
 
@@ -58,11 +100,13 @@ pub trait GeneralCompiler<T: Module> {
         let local_callee = module.declare_func_in_func(callee, builder.func);
 
         let arg = builder.use_var(reductions_variable);
-
+        let block_param = *builder.block_params(merge_block).get(0).unwrap();
         let call = builder.ins().call(local_callee, &[arg]);
-        let result: Value = *builder.inst_results(call).get(0).unwrap();
+        let call = builder.ins().call(local_callee, &[block_param]);
 
-        builder.ins().return_(&[result]);
+        builder.ins().jump(cond_block, &[]);
+        builder.seal_block(cond_block);
+
         builder.finalize();
 
         let id =
