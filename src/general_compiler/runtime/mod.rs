@@ -1,4 +1,4 @@
-use crate::general_compiler::call_malloc;
+use crate::general_compiler::{call_malloc, call_stdprint};
 use cranelift::frontend::FunctionBuilder;
 use cranelift::module::Module;
 use cranelift::prelude::{Block, InstBuilder, IntCC, MemFlags, Value, Variable};

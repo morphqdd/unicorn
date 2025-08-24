@@ -27,7 +27,7 @@ pub trait GeneralCompiler<T: Module> {
     where
         Self: Sized;
     fn unwrap(self) -> (FunctionBuilderContext, Context, DataDescription, T);
-    fn translate(self, exprs: Vec<Expr>) -> Result<Self>
+    fn translate(self, _exprs: Vec<Expr>) -> Result<Self>
     where
         Self: Sized,
     {
@@ -127,4 +127,18 @@ pub fn call_free(module: &mut dyn Module, builder: &mut FunctionBuilder, ptr: Va
 
     let call = builder.ins().call(local_callee_free, &[ptr]);
     *builder.inst_results(call).get(0).unwrap()
+}
+
+pub fn call_stdprint(module: &mut dyn Module, builder: &mut FunctionBuilder, value: Value) {
+    let ty = module.target_config().pointer_type();
+    let mut print_sig = module.make_signature();
+    print_sig.params.push(AbiParam::new(ty));
+    print_sig.returns.push(AbiParam::new(ty));
+
+    let callee_print = module
+        .declare_function("stdprint", Linkage::Import, &print_sig)
+        .unwrap();
+    let local_callee_print = module.declare_func_in_func(callee_print, builder.func);
+
+    let call = builder.ins().call(local_callee_print, &[value]);
 }
