@@ -40,6 +40,8 @@ pub trait GeneralCompiler<T: Module> {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
         let target_type = module.target_config().pointer_type();
 
+        builder.func.signature.returns.push(AbiParam::new(target_type));
+
         let entry_block = builder.create_block();
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
@@ -48,6 +50,9 @@ pub trait GeneralCompiler<T: Module> {
         let runtime = init_runtime(&mut module, &mut builder, after_build_runtime_block);
         builder.switch_to_block(after_build_runtime_block);
         builder.seal_block(after_build_runtime_block);
+
+        let zero = builder.ins().iconst(target_type, 0);
+        builder.ins().return_(&[zero]);
 
         let id = module
             .declare_function("main", Linkage::Export, &mut builder.func.signature)?;
