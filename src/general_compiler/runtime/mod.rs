@@ -1,8 +1,7 @@
-use std::fs::create_dir;
+use crate::general_compiler::call_malloc;
 use cranelift::frontend::FunctionBuilder;
 use cranelift::module::Module;
 use cranelift::prelude::{Block, InstBuilder, IntCC, MemFlags, Value, Variable};
-use crate::general_compiler::call_malloc;
 
 pub struct Runtime {
     pub processes_ptr: Variable,
@@ -10,7 +9,11 @@ pub struct Runtime {
     pub v_process_array_len: Variable,
 }
 
-pub fn init_runtime(module: &mut dyn Module, builder: &mut FunctionBuilder, end_block: Block) -> Runtime {
+pub fn init_runtime(
+    module: &mut dyn Module,
+    builder: &mut FunctionBuilder,
+    end_block: Block,
+) -> Runtime {
     let target_type = module.target_config().pointer_type();
     let zero = builder.ins().iconst(target_type, 0);
 
@@ -21,7 +24,9 @@ pub fn init_runtime(module: &mut dyn Module, builder: &mut FunctionBuilder, end_
     let capacity = 8;
 
     let v_process_array_len = builder.declare_var(target_type);
-    let initial_len = builder.ins().iconst(target_type, v_process_ptr_size * capacity);
+    let initial_len = builder
+        .ins()
+        .iconst(target_type, v_process_ptr_size * capacity);
     builder.def_var(v_process_array_len, initial_len);
 
     let after_call_block = builder.create_block();
@@ -41,14 +46,7 @@ pub fn init_runtime(module: &mut dyn Module, builder: &mut FunctionBuilder, end_
     let action_block = builder.create_block();
     let exit_block = builder.create_block();
 
-    builder
-        .ins()
-        .jump(
-            entry_block,
-            &[
-            ]
-        );
-
+    builder.ins().jump(entry_block, &[]);
 
     builder.switch_to_block(entry_block);
     builder.seal_block(entry_block);
@@ -56,13 +54,7 @@ pub fn init_runtime(module: &mut dyn Module, builder: &mut FunctionBuilder, end_
     let counter = builder.declare_var(target_type);
     let zero = builder.ins().iconst(target_type, 0);
     builder.def_var(counter, zero);
-    builder
-        .ins()
-        .jump(
-            counter_block,
-            &[
-            ],
-        );
+    builder.ins().jump(counter_block, &[]);
 
     builder.switch_to_block(condition_block);
 
@@ -73,13 +65,7 @@ pub fn init_runtime(module: &mut dyn Module, builder: &mut FunctionBuilder, end_
         .icmp(IntCC::UnsignedLessThan, current_counter, process_array_len);
     builder
         .ins()
-        .brif(
-            cond_val,
-            action_block,
-            &[],
-            exit_block,
-            &[]
-        );
+        .brif(cond_val, action_block, &[], exit_block, &[]);
 
     builder.switch_to_block(action_block);
     builder.seal_block(action_block);
@@ -90,13 +76,7 @@ pub fn init_runtime(module: &mut dyn Module, builder: &mut FunctionBuilder, end_
     let ptr = builder.ins().iadd(ptr, offset);
     let zero = builder.ins().iconst(target_type, 0);
     builder.ins().store(MemFlags::new(), zero, ptr, 0);
-    builder
-        .ins()
-        .jump(
-            counter_block,
-            &[]
-        );
-
+    builder.ins().jump(counter_block, &[]);
 
     builder.switch_to_block(counter_block);
     builder.seal_block(counter_block);
@@ -104,27 +84,17 @@ pub fn init_runtime(module: &mut dyn Module, builder: &mut FunctionBuilder, end_
     let current_counter = builder.use_var(counter);
     let new_counter = builder.ins().iadd_imm(current_counter, 1);
     builder.def_var(counter, new_counter);
-    builder
-        .ins()
-        .jump(
-            condition_block,
-            &[]
-        );
+    builder.ins().jump(condition_block, &[]);
     builder.seal_block(condition_block);
 
     builder.switch_to_block(exit_block);
     builder.seal_block(exit_block);
 
-    builder
-        .ins()
-        .jump(
-            end_block,
-            &[]
-        );
+    builder.ins().jump(end_block, &[]);
 
     Runtime {
         current_process,
         v_process_array_len,
-        processes_ptr
+        processes_ptr,
     }
 }

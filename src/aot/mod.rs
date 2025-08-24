@@ -3,6 +3,7 @@ use crate::{
     general_compiler::GeneralCompiler,
 };
 use anyhow::*;
+use cranelift::prelude::{AbiParam, types};
 use cranelift::{
     codegen::Context,
     module::{DataDescription, Linkage, Module, default_libcall_names},
@@ -14,7 +15,6 @@ use std::{
     fs::write,
     path::{Path, PathBuf},
 };
-use cranelift::prelude::{types, AbiParam};
 
 pub struct Aot {
     builder_ctx: FunctionBuilderContext,

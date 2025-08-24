@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use crate::frontend::parser::ast::expr::Expr;
 use cranelift::frontend::{FunctionBuilder, Variable};
 use cranelift::module::{Linkage, Module};
-use cranelift::prelude::{types, AbiParam, Block, InstBuilder, Value};
-use crate::frontend::parser::ast::expr::Expr;
+use cranelift::prelude::{AbiParam, Block, InstBuilder, Value, types};
+use std::collections::HashMap;
 
 struct FunctionTranslator<'a> {
     int: types::Type,

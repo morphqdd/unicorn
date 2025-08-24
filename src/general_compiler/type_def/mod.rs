@@ -5,7 +5,7 @@ pub struct TypeDef {
     name: String,
     fields: Vec<Field>,
     size: usize,
-    align: usize
+    align: usize,
 }
 
 impl TypeDef {
@@ -25,7 +25,7 @@ impl TypeDef {
 pub struct Field {
     name: String,
     ty: types::Type,
-    offset: usize
+    offset: usize,
 }
 
 impl Field {
@@ -33,7 +33,7 @@ impl Field {
         Self {
             name: name.to_string(),
             ty,
-            offset: 0
+            offset: 0,
         }
     }
 }

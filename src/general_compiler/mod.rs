@@ -1,6 +1,10 @@
 use crate::frontend::parser::ast::expr::Expr;
+use crate::general_compiler::runtime::init_runtime;
+use crate::general_compiler::type_def::{Field, TypeDef};
 use anyhow::*;
+use cranelift::codegen::ir::BlockArg;
 use cranelift::module::{FuncOrDataId, Linkage};
+use cranelift::prelude::{Imm64, IntCC, MemFlags, TrapCode};
 use cranelift::{
     codegen::Context,
     module::{DataDescription, Module},
@@ -10,14 +14,10 @@ use cranelift::{
     },
 };
 use std::{collections::HashMap, ops::DerefMut};
-use cranelift::codegen::ir::BlockArg;
-use cranelift::prelude::{Imm64, IntCC, MemFlags, TrapCode};
-use crate::general_compiler::runtime::init_runtime;
-use crate::general_compiler::type_def::{Field, TypeDef};
 
-mod type_def;
 mod function_translator;
 mod runtime;
+mod type_def;
 const REDUCTIONS_LIMIT: i64 = 2;
 
 pub trait GeneralCompiler<T: Module> {
@@ -34,13 +34,16 @@ pub trait GeneralCompiler<T: Module> {
     where
         Self: Sized,
     {
-
         let (mut builder_ctx, mut ctx, data_description, mut module) = self.unwrap();
 
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
         let target_type = module.target_config().pointer_type();
 
-        builder.func.signature.returns.push(AbiParam::new(target_type));
+        builder
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(target_type));
 
         let entry_block = builder.create_block();
         builder.switch_to_block(entry_block);
@@ -57,8 +60,7 @@ pub trait GeneralCompiler<T: Module> {
         let zero = builder.ins().iconst(target_type, 0);
         builder.ins().return_(&[zero]);
 
-        let id = module
-            .declare_function("main", Linkage::Export, &mut builder.func.signature)?;
+        let id = module.declare_function("main", Linkage::Export, &mut builder.func.signature)?;
         module.define_function(id, &mut ctx)?;
         module.clear_context(&mut ctx);
 
@@ -71,7 +73,12 @@ pub trait GeneralCompiler<T: Module> {
     }
 }
 
-pub fn call_malloc(module: &mut dyn Module, builder: &mut FunctionBuilder, buffer_size: Value, block_after_call: Block) {
+pub fn call_malloc(
+    module: &mut dyn Module,
+    builder: &mut FunctionBuilder,
+    buffer_size: Value,
+    block_after_call: Block,
+) {
     let ty = module.target_config().pointer_type();
     let mut malloc_sig = module.make_signature();
     malloc_sig.params.push(AbiParam::new(ty));
@@ -80,8 +87,7 @@ pub fn call_malloc(module: &mut dyn Module, builder: &mut FunctionBuilder, buffe
     let callee_malloc = module
         .declare_function("malloc", Linkage::Import, &malloc_sig)
         .unwrap();
-    let local_callee_malloc= module
-        .declare_func_in_func(callee_malloc, builder.func);
+    let local_callee_malloc = module.declare_func_in_func(callee_malloc, builder.func);
 
     let call = builder.ins().call(local_callee_malloc, &[buffer_size]);
     let ptr: Value = *builder.inst_results(call).get(0).unwrap();
@@ -98,15 +104,13 @@ pub fn call_malloc(module: &mut dyn Module, builder: &mut FunctionBuilder, buffe
     let ptr = *builder.block_params(cond_block).get(0).unwrap();
 
     let is_null = builder.ins().icmp_imm(IntCC::Equal, ptr, 0);
-    builder
-        .ins()
-        .brif(
-            is_null,
-            trap_block,
-            &[],
-            block_after_call,
-            &[BlockArg::Value(ptr)]
-        );
+    builder.ins().brif(
+        is_null,
+        trap_block,
+        &[],
+        block_after_call,
+        &[BlockArg::Value(ptr)],
+    );
 
     builder.switch_to_block(trap_block);
     builder.seal_block(trap_block);
@@ -122,8 +126,7 @@ pub fn call_free(module: &mut dyn Module, builder: &mut FunctionBuilder, ptr: Va
     let callee_free = module
         .declare_function("free", Linkage::Import, &free_sig)
         .unwrap();
-    let local_callee_free = module
-        .declare_func_in_func(callee_free, builder.func);
+    let local_callee_free = module.declare_func_in_func(callee_free, builder.func);
 
     let call = builder.ins().call(local_callee_free, &[ptr]);
     *builder.inst_results(call).get(0).unwrap()
