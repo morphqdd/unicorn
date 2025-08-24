@@ -1,19 +1,18 @@
 use crate::{
-    frontend::parser::{self, ast::expr::Expr},
+    frontend::parser::{self},
     general_compiler::GeneralCompiler,
 };
 use anyhow::*;
-use cranelift::prelude::{AbiParam, types};
 use cranelift::{
     codegen::Context,
-    module::{DataDescription, Linkage, Module, default_libcall_names},
+    module::{DataDescription, Module, default_libcall_names},
     native,
     object::{ObjectBuilder, ObjectModule},
     prelude::{Configurable, FunctionBuilderContext, settings},
 };
 use std::{
     fs::write,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 pub struct Aot {

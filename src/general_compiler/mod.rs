@@ -1,19 +1,16 @@
 use crate::frontend::parser::ast::expr::Expr;
 use crate::general_compiler::runtime::init_runtime;
-use crate::general_compiler::type_def::{Field, TypeDef};
 use anyhow::*;
 use cranelift::codegen::ir::BlockArg;
-use cranelift::module::{FuncOrDataId, Linkage};
-use cranelift::prelude::{Imm64, IntCC, MemFlags, TrapCode};
+use cranelift::module::Linkage;
+use cranelift::prelude::{IntCC, TrapCode};
 use cranelift::{
     codegen::Context,
     module::{DataDescription, Module},
     prelude::{
-        AbiParam, Block, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value, Variable,
-        types,
+        AbiParam, Block, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value,
     },
 };
-use std::{collections::HashMap, ops::DerefMut};
 
 mod function_translator;
 mod runtime;
