@@ -11,7 +11,7 @@ use cranelift::{
 };
 use std::{collections::HashMap, ops::DerefMut};
 use cranelift::codegen::ir::BlockArg;
-use cranelift::prelude::{Imm64, IntCC, MemFlags};
+use cranelift::prelude::{Imm64, IntCC, MemFlags, TrapCode};
 use crate::general_compiler::runtime::init_runtime;
 use crate::general_compiler::type_def::{Field, TypeDef};
 
@@ -51,6 +51,9 @@ pub trait GeneralCompiler<T: Module> {
         builder.switch_to_block(after_build_runtime_block);
         builder.seal_block(after_build_runtime_block);
 
+        let process_ptr = builder.use_var(runtime.processes_ptr);
+        call_free(&mut module, &mut builder, process_ptr);
+
         let zero = builder.ins().iconst(target_type, 0);
         builder.ins().return_(&[zero]);
 
@@ -68,7 +71,7 @@ pub trait GeneralCompiler<T: Module> {
     }
 }
 
-pub fn call_malloc(module: &mut dyn Module, builder: &mut FunctionBuilder, buffer_size: Value) -> Value {
+pub fn call_malloc(module: &mut dyn Module, builder: &mut FunctionBuilder, buffer_size: Value, block_after_call: Block) {
     let ty = module.target_config().pointer_type();
     let mut malloc_sig = module.make_signature();
     malloc_sig.params.push(AbiParam::new(ty));
@@ -81,5 +84,47 @@ pub fn call_malloc(module: &mut dyn Module, builder: &mut FunctionBuilder, buffe
         .declare_func_in_func(callee_malloc, builder.func);
 
     let call = builder.ins().call(local_callee_malloc, &[buffer_size]);
+    let ptr: Value = *builder.inst_results(call).get(0).unwrap();
+
+    let cond_block = builder.create_block();
+    let trap_block = builder.create_block();
+
+    builder.ins().jump(cond_block, &[BlockArg::Value(ptr)]);
+
+    builder.switch_to_block(cond_block);
+    builder.seal_block(cond_block);
+    builder.append_block_param(cond_block, ty);
+
+    let ptr = *builder.block_params(cond_block).get(0).unwrap();
+
+    let is_null = builder.ins().icmp_imm(IntCC::Equal, ptr, 0);
+    builder
+        .ins()
+        .brif(
+            is_null,
+            trap_block,
+            &[],
+            block_after_call,
+            &[BlockArg::Value(ptr)]
+        );
+
+    builder.switch_to_block(trap_block);
+    builder.seal_block(trap_block);
+    builder.ins().trap(TrapCode::HEAP_OUT_OF_BOUNDS);
+}
+
+pub fn call_free(module: &mut dyn Module, builder: &mut FunctionBuilder, ptr: Value) -> Value {
+    let ty = module.target_config().pointer_type();
+    let mut free_sig = module.make_signature();
+    free_sig.params.push(AbiParam::new(ty));
+    free_sig.returns.push(AbiParam::new(ty));
+
+    let callee_free = module
+        .declare_function("free", Linkage::Import, &free_sig)
+        .unwrap();
+    let local_callee_free = module
+        .declare_func_in_func(callee_free, builder.func);
+
+    let call = builder.ins().call(local_callee_free, &[ptr]);
     *builder.inst_results(call).get(0).unwrap()
 }

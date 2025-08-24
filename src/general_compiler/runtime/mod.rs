@@ -1,12 +1,13 @@
+use std::fs::create_dir;
 use cranelift::frontend::FunctionBuilder;
 use cranelift::module::Module;
 use cranelift::prelude::{Block, InstBuilder, IntCC, MemFlags, Value, Variable};
 use crate::general_compiler::call_malloc;
 
 pub struct Runtime {
-    processes_ptr: Variable,
-    current_process: Variable,
-    v_process_array_len: Variable,
+    pub processes_ptr: Variable,
+    pub current_process: Variable,
+    pub v_process_array_len: Variable,
 }
 
 pub fn init_runtime(module: &mut dyn Module, builder: &mut FunctionBuilder, end_block: Block) -> Runtime {
@@ -23,7 +24,14 @@ pub fn init_runtime(module: &mut dyn Module, builder: &mut FunctionBuilder, end_
     let initial_len = builder.ins().iconst(target_type, v_process_ptr_size * capacity);
     builder.def_var(v_process_array_len, initial_len);
 
-    let ptr = call_malloc(module, builder, initial_len);
+    let after_call_block = builder.create_block();
+    builder.append_block_param(after_call_block, target_type);
+
+    call_malloc(module, builder, initial_len, after_call_block);
+    builder.switch_to_block(after_call_block);
+    builder.seal_block(after_call_block);
+
+    let ptr = *builder.block_params(after_call_block).get(0).unwrap();
     let processes_ptr = builder.declare_var(target_type);
     builder.def_var(processes_ptr, ptr);
 
