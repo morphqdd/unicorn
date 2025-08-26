@@ -4,7 +4,7 @@ use anyhow::*;
 use base64ct::{Base64, Encoding};
 use cranelift::codegen::ir::BlockArg;
 use cranelift::module::Linkage;
-use cranelift::prelude::{IntCC, TrapCode};
+use cranelift::prelude::{IntCC, MemFlags, TrapCode};
 use cranelift::{
     codegen::Context,
     module::{DataDescription, Module},
@@ -101,8 +101,12 @@ pub trait GeneralCompiler<T: Module> {
         let processes_ptr = builder.use_var(runtime.processes_ptr);
 
         let new_process = create_process(&mut module, &mut builder);
+        let ptr = builder.use_var(new_process);
+       //builder.ins().store(MemFlags::new(), ptr, processes_ptr, 0);
 
-        call_free(&mut module, &mut builder, processes_ptr);
+
+
+        //call_free(&mut module, &mut builder, processes_ptr);
 
         let zero = builder.ins().iconst(target_type, 0);
         builder.ins().return_(&[zero]);
@@ -127,6 +131,7 @@ pub fn call_malloc(
     builder: &mut FunctionBuilder,
     buffer_size: Value,
     block_after_call: Block,
+    block_args: &[BlockArg]
 ) {
     let ty = module.target_config().pointer_type();
     let mut malloc_sig = module.make_signature();
@@ -142,15 +147,31 @@ pub fn call_malloc(
     let ptr: Value = *builder.inst_results(call).get(0).unwrap();
 
     let cond_block = builder.create_block();
+    for _ in block_args {
+        builder.append_block_param(cond_block,ty);
+    }
+    builder.append_block_param(cond_block, ty);
+
     let trap_block = builder.create_block();
 
-    builder.ins().jump(cond_block, &[BlockArg::Value(ptr)]);
+    builder.ins().jump(
+        cond_block,
+        &[
+            block_args,
+            &[BlockArg::Value(ptr)]
+        ].concat()
+    );
 
     builder.switch_to_block(cond_block);
     builder.seal_block(cond_block);
-    builder.append_block_param(cond_block, ty);
 
-    let ptr = *builder.block_params(cond_block).get(0).unwrap();
+    let len = builder.block_params(cond_block).len();
+    let ptr = *builder.block_params(cond_block).last().unwrap();
+    let block_args: Vec<BlockArg> =
+        (&builder.block_params(cond_block)[..len-1])
+            .iter()
+            .map(|x| BlockArg::Value(*x))
+            .collect();
 
     let is_null = builder.ins().icmp_imm(IntCC::Equal, ptr, 0);
     builder.ins().brif(
@@ -158,7 +179,7 @@ pub fn call_malloc(
         trap_block,
         &[],
         block_after_call,
-        &[BlockArg::Value(ptr)],
+        &[&block_args[..], &[BlockArg::Value(ptr)]].concat(),
     );
 
     builder.switch_to_block(trap_block);

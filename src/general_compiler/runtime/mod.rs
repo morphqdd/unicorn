@@ -28,13 +28,16 @@ pub fn init_runtime(
     let v_process_array_len = builder.declare_var(target_type);
     let initial_len = builder
         .ins()
-        .iconst(target_type, v_process_ptr_size * capacity);
+        .iconst(target_type, capacity);
+    let buffer_size = builder
+        .ins()
+        .iconst(target_type, capacity * v_process_ptr_size);
     builder.def_var(v_process_array_len, initial_len);
 
     let after_call_block = builder.create_block();
     builder.append_block_param(after_call_block, target_type);
 
-    call_malloc(module, builder, initial_len, after_call_block);
+    call_malloc(module, builder, buffer_size, after_call_block, &[]);
     builder.switch_to_block(after_call_block);
     builder.seal_block(after_call_block);
 
@@ -64,7 +67,7 @@ pub fn init_runtime(
     let current_counter = builder.use_var(counter);
     let cond_val = builder
         .ins()
-        .icmp(IntCC::UnsignedLessThan, current_counter, process_array_len);
+        .icmp(IntCC::SignedLessThan, current_counter, process_array_len);
     builder
         .ins()
         .brif(cond_val, action_block, &[], exit_block, &[]);
