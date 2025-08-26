@@ -18,15 +18,6 @@ pub fn create_process(module: &mut dyn Module, builder: &mut FunctionBuilder) ->
     let after_call_block = builder.create_block();
     builder.append_block_param(after_call_block, target_type);
     call_malloc(module, builder, virtual_process_size, after_call_block, &[]);
-    // builder
-    //     .ins()
-    //     .jump(
-    //         after_call_block,
-    //         &[
-    //             BlockArg::Value(virtual_process_size),
-    //         ],
-    //     );
-    // 
 
     builder.switch_to_block(after_call_block);
     builder.seal_block(after_call_block);
@@ -44,15 +35,6 @@ pub fn create_process(module: &mut dyn Module, builder: &mut FunctionBuilder) ->
         after_call_block,
         &[BlockArg::Value(ptr)]
     );
-    // builder
-    //     .ins()
-    //     .jump(
-    //         after_call_block,
-    //         &[
-    //             BlockArg::Value(virtual_process_ctx_size),
-    //             BlockArg::Value(virtual_process_ctx_size)
-    //         ],
-    //     );
 
     builder.switch_to_block(after_call_block);
     builder.seal_block(after_call_block);
@@ -63,8 +45,8 @@ pub fn create_process(module: &mut dyn Module, builder: &mut FunctionBuilder) ->
     let (id, _sig) = map.into_iter().nth(0).unwrap();
     let callee = module.declare_func_in_func(id, builder.func);
     let func_addr = builder.ins().func_addr(target_type, callee);
-    //builder.ins().store(MemFlags::new(), func_addr, process_ctx_ptr, 0);
-    //builder.ins().store(MemFlags::new(), process_ctx_ptr, new_process_ptr, 0);
+    builder.ins().store(MemFlags::new(), func_addr, process_ctx_ptr, 0);
+    builder.ins().store(MemFlags::new(), process_ctx_ptr, new_process_ptr, 0);
 
     let process_ptr = builder.declare_var(target_type);
     builder.def_var(process_ptr, new_process_ptr);

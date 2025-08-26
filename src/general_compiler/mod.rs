@@ -102,11 +102,27 @@ pub trait GeneralCompiler<T: Module> {
 
         let new_process = create_process(&mut module, &mut builder);
         let ptr = builder.use_var(new_process);
-       //builder.ins().store(MemFlags::new(), ptr, processes_ptr, 0);
+        builder.ins().store(MemFlags::new(), ptr, processes_ptr, 0);
 
+        let process_ptr = builder
+            .ins().load(target_type, MemFlags::new(), processes_ptr, 0);
+        let process_ctx_ptr = builder
+            .ins().load(target_type, MemFlags::new(), process_ptr, 0);
+        let func_addr = builder
+            .ins().load(target_type, MemFlags::new(), process_ctx_ptr, 0);
 
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(target_type));
+        sig.returns.push(AbiParam::new(target_type));
+        let sig_ref= builder.import_signature(sig);
+        let v = builder.ins().iconst(target_type, 20);
 
-        //call_free(&mut module, &mut builder, processes_ptr);
+        builder.ins()
+            .call_indirect(sig_ref, func_addr, &[v]);
+
+        call_free(&mut module, &mut builder, process_ctx_ptr);
+        call_free(&mut module, &mut builder, process_ptr);
+        call_free(&mut module, &mut builder, processes_ptr);
 
         let zero = builder.ins().iconst(target_type, 0);
         builder.ins().return_(&[zero]);
