@@ -10,3 +10,6 @@ criterion = { version = "0.7.0", features = ['html_reports']}
 cranelift = { version = "0.123.0", features = [ 'jit', 'module', 'native', 'object' ] }
 peg = "0.8.5"
 anyhow = "1"
+whirlpool = "0.11.0-rc.0"
+base64ct = { version = "1.8.0", features = ["alloc"] }
+lazy_static = "1.5.0"

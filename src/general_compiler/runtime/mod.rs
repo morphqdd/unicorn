@@ -3,6 +3,8 @@ use cranelift::frontend::FunctionBuilder;
 use cranelift::module::Module;
 use cranelift::prelude::{Block, InstBuilder, IntCC, MemFlags, Value, Variable};
 
+pub mod virtual_process;
+
 pub struct Runtime {
     pub processes_ptr: Variable,
     pub current_process: Variable,

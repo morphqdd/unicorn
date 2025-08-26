@@ -1,6 +1,7 @@
 use crate::frontend::parser::ast::expr::Expr;
 use crate::general_compiler::runtime::init_runtime;
 use anyhow::*;
+use base64ct::{Base64, Encoding};
 use cranelift::codegen::ir::BlockArg;
 use cranelift::module::Linkage;
 use cranelift::prelude::{IntCC, TrapCode};
@@ -11,6 +12,9 @@ use cranelift::{
         AbiParam, Block, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value,
     },
 };
+use whirlpool::Digest;
+use crate::aot::STORE_FUNCTIONS;
+use crate::general_compiler::runtime::virtual_process::create_process;
 
 mod function_translator;
 mod runtime;
@@ -39,6 +43,49 @@ pub trait GeneralCompiler<T: Module> {
         builder
             .func
             .signature
+            .params
+            .push(AbiParam::new(target_type));
+
+        builder
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(target_type));
+
+        let entry_block = builder.create_block();
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
+        builder.append_block_param(entry_block, target_type);
+        let v = *builder.block_params(entry_block).get(0).unwrap();
+        call_stdprint(&mut module, &mut builder, v);
+        let zero = builder.ins().iconst(target_type,0);
+        builder.ins().return_(&[zero]);
+
+        let mut whirlpool = whirlpool::Whirlpool::default();
+        let name = b"main";
+        Digest::update(&mut whirlpool, name);
+        let hash = whirlpool.finalize();
+        let hash = Base64::encode_string(hash.as_ref());
+
+        let id = module
+            .declare_function(
+                &hash,
+                Linkage::Export,
+                &builder.func.signature
+            )?;
+
+        STORE_FUNCTIONS.write().unwrap()
+            .insert(id, builder.func.signature.clone());
+        builder.finalize();
+        module.define_function(id, &mut ctx)?;
+        module.clear_context(&mut ctx);
+
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let target_type = module.target_config().pointer_type();
+
+        builder
+            .func
+            .signature
             .returns
             .push(AbiParam::new(target_type));
 
@@ -51,13 +98,18 @@ pub trait GeneralCompiler<T: Module> {
         builder.switch_to_block(after_build_runtime_block);
         builder.seal_block(after_build_runtime_block);
 
-        let process_ptr = builder.use_var(runtime.processes_ptr);
-        call_free(&mut module, &mut builder, process_ptr);
+        let processes_ptr = builder.use_var(runtime.processes_ptr);
+
+        let new_process = create_process(&mut module, &mut builder);
+
+        call_free(&mut module, &mut builder, processes_ptr);
 
         let zero = builder.ins().iconst(target_type, 0);
         builder.ins().return_(&[zero]);
 
+
         let id = module.declare_function("main", Linkage::Export, &mut builder.func.signature)?;
+        builder.finalize();
         module.define_function(id, &mut ctx)?;
         module.clear_context(&mut ctx);
 

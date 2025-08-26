@@ -14,6 +14,16 @@ use std::{
     fs::write,
     path::Path,
 };
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use cranelift::module::FuncId;
+use cranelift::prelude::Signature;
+use lazy_static::lazy_static;
+
+lazy_static!{
+    pub static ref STORE_FUNCTIONS: Arc<RwLock<HashMap<FuncId, Signature>>>
+        = Arc::new(RwLock::new(HashMap::new()));
+}
 
 pub struct Aot {
     builder_ctx: FunctionBuilderContext,
