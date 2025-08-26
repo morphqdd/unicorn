@@ -43,6 +43,14 @@
         src = rustSrc;
         cargoLock.lockFile = "${src}/Cargo.lock";
 
+        nativeBuildInputs = with pkgs; [ mold makeWrapper ];
+        buildInputs = with pkgs; [ glibc ];
+        postInstall = ''
+            wrapProgram $out/bin/my-compiler \
+            --set LD "${pkgs.mold}/bin/mold" \
+            --set NIX_LDFLAGS "-L${pkgs.glibc}/lib" \
+            --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.mold pkgs.gcc ]}"
+        '';
       };
 
       devShells."${system}".default = pkgs.mkShell {

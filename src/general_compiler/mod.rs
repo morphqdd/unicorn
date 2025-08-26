@@ -1,18 +1,24 @@
 use crate::frontend::parser::ast::expr::Expr;
+use crate::general_compiler::runtime::init_runtime;
 use anyhow::*;
-use cranelift::module::{FuncOrDataId, Linkage};
+use base64ct::{Base64, Encoding};
+use cranelift::codegen::ir::BlockArg;
+use cranelift::module::Linkage;
+use cranelift::prelude::{IntCC, MemFlags, TrapCode};
 use cranelift::{
     codegen::Context,
     module::{DataDescription, Module},
     prelude::{
-        AbiParam, Block, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value, Variable,
-        types,
+        AbiParam, Block, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value,
     },
 };
-use std::{collections::HashMap, ops::DerefMut};
-use cranelift::codegen::ir::BlockArg;
-use cranelift::prelude::IntCC;
+use whirlpool::Digest;
+use crate::aot::STORE_FUNCTIONS;
+use crate::general_compiler::runtime::virtual_process::create_process;
 
+mod function_translator;
+mod runtime;
+mod type_def;
 const REDUCTIONS_LIMIT: i64 = 2;
 
 pub trait GeneralCompiler<T: Module> {
@@ -25,182 +31,108 @@ pub trait GeneralCompiler<T: Module> {
     where
         Self: Sized;
     fn unwrap(self) -> (FunctionBuilderContext, Context, DataDescription, T);
-    fn translate(self, exprs: Vec<Expr>) -> Result<Self>
+    fn translate(self, _exprs: Vec<Expr>) -> Result<Self>
     where
         Self: Sized,
     {
         let (mut builder_ctx, mut ctx, data_description, mut module) = self.unwrap();
 
-        let int= module.target_config().pointer_type();
-        ctx.func.signature.returns.push(AbiParam::new(int));
-
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let target_type = module.target_config().pointer_type();
+
+        builder
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(target_type));
+
+        builder
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(target_type));
 
         let entry_block = builder.create_block();
-        builder.append_block_params_for_function_params(entry_block);
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
+        builder.append_block_param(entry_block, target_type);
+        let v = *builder.block_params(entry_block).get(0).unwrap();
+        call_stdprint(&mut module, &mut builder, v);
+        let zero = builder.ins().iconst(target_type,0);
+        builder.ins().return_(&[zero]);
+
+        let mut whirlpool = whirlpool::Whirlpool::default();
+        let name = b"main";
+        Digest::update(&mut whirlpool, name);
+        let hash = whirlpool.finalize();
+        let hash = Base64::encode_string(hash.as_ref());
+
+        let id = module
+            .declare_function(
+                &hash,
+                Linkage::Export,
+                &builder.func.signature
+            )?;
+
+        STORE_FUNCTIONS.write().unwrap()
+            .insert(id, builder.func.signature.clone());
+        builder.finalize();
+        module.define_function(id, &mut ctx)?;
+        module.clear_context(&mut ctx);
+
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let target_type = module.target_config().pointer_type();
+
+        builder
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(target_type));
+
+        let entry_block = builder.create_block();
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
 
-        let reductions_limit = builder.declare_var(int);
-        let reductions_variable = builder.declare_var(int);
-        let limit_of_reductions = builder.ins().iconst(int, REDUCTIONS_LIMIT);
-        let default_reductions = builder.ins().iconst(int, 0);
-        builder.def_var(reductions_limit, limit_of_reductions);
-        builder.def_var(reductions_variable, default_reductions);
+        let after_build_runtime_block = builder.create_block();
+        let runtime = init_runtime(&mut module, &mut builder, after_build_runtime_block);
+        builder.switch_to_block(after_build_runtime_block);
+        builder.seal_block(after_build_runtime_block);
 
-        let cond_block = builder.create_block();
-        builder.ins().jump(cond_block, &[]);
-        builder.switch_to_block(cond_block);
+        let processes_ptr = builder.use_var(runtime.processes_ptr);
 
-        let limit_of_reductions = builder.use_var(reductions_limit);
-        let current_reductions = builder.use_var(reductions_variable);
-        let condition_value = builder.ins().icmp(IntCC::Equal, current_reductions, limit_of_reductions);
+        let new_process = create_process(&mut module, &mut builder);
+        let ptr = builder.use_var(new_process);
+        builder.ins().store(MemFlags::new(), ptr, processes_ptr, 0);
 
-        let then_block = builder.create_block();
-        let else_block = builder.create_block();
-        let merge_block = builder.create_block();
-
-        builder.append_block_param(merge_block, int);
-
-        builder
-            .ins()
-            .brif(
-                condition_value,
-                then_block, &[],
-                else_block, &[]
-            );
-
-        builder.switch_to_block(then_block);
-        builder.seal_block(then_block);
-        let then_result = builder.ins().iconst(int, 10);
-        builder.def_var(reductions_variable, default_reductions);
-        builder.ins().jump(merge_block, &[BlockArg::Value(then_result)]);
-
-        builder.switch_to_block(else_block);
-        builder.seal_block(else_block);
-        let else_result = builder.ins().iconst(int, 20);
-        let the_one = builder.ins().iconst(int, 1);
-        let current_reductions = builder.use_var(reductions_variable);
-        let the_new_val = builder.ins().iadd(current_reductions,the_one);
-        builder.def_var(reductions_variable, the_new_val);
-        builder.ins().jump(merge_block, &[BlockArg::Value(else_result)]);
-
-
-        builder.switch_to_block(merge_block);
-        builder.seal_block(merge_block);
+        let process_ptr = builder
+            .ins().load(target_type, MemFlags::new(), processes_ptr, 0);
+        let process_ctx_ptr = builder
+            .ins().load(target_type, MemFlags::new(), process_ptr, 0);
+        let func_addr = builder
+            .ins().load(target_type, MemFlags::new(), process_ctx_ptr, 0);
 
         let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(target_type));
+        sig.returns.push(AbiParam::new(target_type));
+        let sig_ref= builder.import_signature(sig);
+        let v = builder.ins().iconst(target_type, 20);
 
-        sig.params.push(AbiParam::new(int));
-        sig.returns.push(AbiParam::new(int));
+        builder.ins()
+            .call_indirect(sig_ref, func_addr, &[v]);
 
-        let callee = module
-            .declare_function("stdprint", Linkage::Import, &sig)?;
+        call_free(&mut module, &mut builder, process_ctx_ptr);
+        call_free(&mut module, &mut builder, process_ptr);
+        call_free(&mut module, &mut builder, processes_ptr);
 
-        let local_callee = module.declare_func_in_func(callee, builder.func);
+        let zero = builder.ins().iconst(target_type, 0);
+        builder.ins().return_(&[zero]);
 
-        let arg = builder.use_var(reductions_variable);
-        let block_param = *builder.block_params(merge_block).get(0).unwrap();
-        let call = builder.ins().call(local_callee, &[arg]);
-        let call = builder.ins().call(local_callee, &[block_param]);
 
-        builder.ins().jump(cond_block, &[]);
-        builder.seal_block(cond_block);
-
+        let id = module.declare_function("main", Linkage::Export, &mut builder.func.signature)?;
         builder.finalize();
-
-        let id =
-            module.declare_function("main", Linkage::Export, &ctx.func.signature)?;
-
         module.define_function(id, &mut ctx)?;
-
         module.clear_context(&mut ctx);
 
-        // for expr in exprs {
-        //     match expr {
-        //         Expr::Function {
-        //             name,
-        //             function_ty,
-        //             body,
-        //         } => match *function_ty {
-        //             Expr::FunctionType { params, ret_ty } => {
-        //                 // Set support type
-        //                 let int = module.target_config().pointer_type();
-        //
-        //                 // Set params of function
-        //                 for _p in params.iter() {
-        //                     ctx.func.signature.params.push(AbiParam::new(int));
-        //                 }
-        //
-        //                 // Set function return type
-        //                 ctx.func.signature.returns.push(AbiParam::new(int));
-        //
-        //                 let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
-        //
-        //                 // Create block for entry to function
-        //                 let entry_block = builder.create_block();
-        //                 // Since this is the entry block, add block parameters corresponding to
-        //                 // the function's parameters.
-        //                 builder.append_block_params_for_function_params(entry_block);
-        //
-        //                 // Tell the builder to emit code in this block.
-        //                 builder.switch_to_block(entry_block);
-        //
-        //                 // And, tell the builder that this block will have no further
-        //                 // predecessors. Since it's the entry block, it won't have any
-        //                 // predecessors.
-        //                 builder.seal_block(entry_block);
-        //                 let Expr::Ident(ret_ty) = *ret_ty else {
-        //                     panic!()
-        //                 };
-        //                 let vars = declare_variables(
-        //                     int,
-        //                     &mut builder,
-        //                     &params
-        //                         .iter()
-        //                         .map(|(expr, _)| match expr {
-        //                             Expr::Ident(name) => name.to_string(),
-        //                             _ => panic!("Not ident"),
-        //                         })
-        //                         .collect::<Vec<_>>(),
-        //                     &ret_ty,
-        //                     &body,
-        //                     entry_block,
-        //                 );
-        //
-        //                 let mut trans = FunctionTranslator {
-        //                     int,
-        //                     builder,
-        //                     variables: vars,
-        //                     module: &mut module,
-        //                 };
-        //
-        //                 for i in 0..body.len() - 1 {
-        //                     trans.translate_expr(body[i].clone());
-        //                 }
-        //
-        //                 let val = trans.translate_expr(body[body.len() - 1].clone());
-        //
-        //                 trans.builder.ins().return_(&[val]);
-        //
-        //                 trans.builder.finalize();
-        //
-        //                 let Expr::Ident(name) = *name else {
-        //                     panic!("Not a name!")
-        //                 };
-        //
-        //                 let id =
-        //                     module.declare_function(&name, Linkage::Export, &ctx.func.signature)?;
-        //
-        //                 module.define_function(id, &mut ctx)?;
-        //
-        //                 module.clear_context(&mut ctx);
-        //             }
-        //             _ => panic!("Translation for this function type is not support yet"),
-        //         },
-        //         _ => panic!("Translation not support yet"),
-        //     }
-        // }
         Ok(Self::from_general_compiler(
             builder_ctx,
             ctx,
@@ -210,97 +142,92 @@ pub trait GeneralCompiler<T: Module> {
     }
 }
 
-struct FunctionTranslator<'a> {
-    int: types::Type,
-    builder: FunctionBuilder<'a>,
-    variables: HashMap<String, Variable>,
-    module: &'a mut dyn Module,
-}
-
-impl<'a> FunctionTranslator<'a> {
-    pub fn translate_expr(&mut self, expr: Expr) -> Value {
-        match expr {
-            Expr::Ident(name) => {
-                let var = self.variables.get(&name).expect("Variable not define");
-                self.builder.use_var(*var)
-            }
-            Expr::Call { ident, args } => match *ident {
-                Expr::Ident(name) => {
-                    let mut sig = self.module.make_signature();
-
-                    for _arg in &args {
-                        sig.params.push(AbiParam::new(self.int))
-                    }
-
-                    sig.returns.push(AbiParam::new(self.int));
-
-                    let callee = self
-                        .module
-                        .declare_function(&name, Linkage::Import, &sig)
-                        .expect("Problem declaration function");
-
-                    let local_callee = self.module.declare_func_in_func(callee, self.builder.func);
-
-                    let mut arg_values = vec![];
-
-                    for arg in args {
-                        arg_values.push(self.translate_expr(arg))
-                    }
-
-                    let call = self.builder.ins().call(local_callee, &arg_values);
-                    *self.builder.inst_results(call).get(0).unwrap()
-                }
-                _ => todo!(),
-            },
-            Expr::Lit(lit) => {
-                let imm: i32 = lit.parse().unwrap();
-                self.builder.ins().iconst(self.int, i64::from(imm))
-            }
-            Expr::Function {
-                name,
-                function_ty,
-                body,
-            } => todo!(),
-            Expr::FunctionType { params, ret_ty } => todo!(),
-            Expr::Assign((name, _), expr) => match *name {
-                Expr::Ident(name) => {
-                    let val = self.translate_expr(*expr);
-                    let var = self.builder.declare_var(self.int);
-                    self.builder.def_var(var, val);
-                    self.variables.insert(name, var);
-                    val
-                }
-                _ => todo!(),
-            },
-            Expr::GlobalDataAddr(expr) => todo!(),
-        }
-    }
-}
-
-fn declare_variables(
-    int: types::Type,
+pub fn call_malloc(
+    module: &mut dyn Module,
     builder: &mut FunctionBuilder,
-    params: &[String],
-    the_return: &str,
-    stmt: &[Expr],
-    entry_block: Block,
-) -> HashMap<String, Variable> {
-    let mut vars = HashMap::new();
+    buffer_size: Value,
+    block_after_call: Block,
+    block_args: &[BlockArg]
+) {
+    let ty = module.target_config().pointer_type();
+    let mut malloc_sig = module.make_signature();
+    malloc_sig.params.push(AbiParam::new(ty));
+    malloc_sig.returns.push(AbiParam::new(ty));
 
-    for (i, name) in params.iter().enumerate() {
-        let val = *builder.block_params(entry_block).get(i).as_deref().unwrap();
-        let var = builder.declare_var(int);
-        vars.insert(name.into(), var);
-        builder.def_var(var, val);
+    let callee_malloc = module
+        .declare_function("malloc", Linkage::Import, &malloc_sig)
+        .unwrap();
+    let local_callee_malloc = module.declare_func_in_func(callee_malloc, builder.func);
+
+    let call = builder.ins().call(local_callee_malloc, &[buffer_size]);
+    let ptr: Value = *builder.inst_results(call).get(0).unwrap();
+
+    let cond_block = builder.create_block();
+    for _ in block_args {
+        builder.append_block_param(cond_block,ty);
     }
+    builder.append_block_param(cond_block, ty);
 
-    let zero = builder.ins().iconst(int, 0);
-    let return_var = {
-        let var = builder.declare_var(int);
-        vars.insert(the_return.into(), var);
-        var
-    };
-    builder.def_var(return_var, zero);
+    let trap_block = builder.create_block();
 
-    vars
+    builder.ins().jump(
+        cond_block,
+        &[
+            block_args,
+            &[BlockArg::Value(ptr)]
+        ].concat()
+    );
+
+    builder.switch_to_block(cond_block);
+    builder.seal_block(cond_block);
+
+    let len = builder.block_params(cond_block).len();
+    let ptr = *builder.block_params(cond_block).last().unwrap();
+    let block_args: Vec<BlockArg> =
+        (&builder.block_params(cond_block)[..len-1])
+            .iter()
+            .map(|x| BlockArg::Value(*x))
+            .collect();
+
+    let is_null = builder.ins().icmp_imm(IntCC::Equal, ptr, 0);
+    builder.ins().brif(
+        is_null,
+        trap_block,
+        &[],
+        block_after_call,
+        &[&block_args[..], &[BlockArg::Value(ptr)]].concat(),
+    );
+
+    builder.switch_to_block(trap_block);
+    builder.seal_block(trap_block);
+    builder.ins().trap(TrapCode::HEAP_OUT_OF_BOUNDS);
+}
+
+pub fn call_free(module: &mut dyn Module, builder: &mut FunctionBuilder, ptr: Value) -> Value {
+    let ty = module.target_config().pointer_type();
+    let mut free_sig = module.make_signature();
+    free_sig.params.push(AbiParam::new(ty));
+    free_sig.returns.push(AbiParam::new(ty));
+
+    let callee_free = module
+        .declare_function("free", Linkage::Import, &free_sig)
+        .unwrap();
+    let local_callee_free = module.declare_func_in_func(callee_free, builder.func);
+
+    let call = builder.ins().call(local_callee_free, &[ptr]);
+    *builder.inst_results(call).get(0).unwrap()
+}
+
+pub fn call_stdprint(module: &mut dyn Module, builder: &mut FunctionBuilder, value: Value) {
+    let ty = module.target_config().pointer_type();
+    let mut print_sig = module.make_signature();
+    print_sig.params.push(AbiParam::new(ty));
+    print_sig.returns.push(AbiParam::new(ty));
+
+    let callee_print = module
+        .declare_function("stdprint", Linkage::Import, &print_sig)
+        .unwrap();
+    let local_callee_print = module.declare_func_in_func(callee_print, builder.func);
+
+    let call = builder.ins().call(local_callee_print, &[value]);
 }

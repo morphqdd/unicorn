@@ -1,20 +1,29 @@
 use crate::{
-    frontend::parser::{self, ast::expr::Expr},
+    frontend::parser::{self},
     general_compiler::GeneralCompiler,
 };
 use anyhow::*;
 use cranelift::{
     codegen::Context,
-    module::{DataDescription, Linkage, Module, default_libcall_names},
+    module::{DataDescription, Module, default_libcall_names},
     native,
     object::{ObjectBuilder, ObjectModule},
     prelude::{Configurable, FunctionBuilderContext, settings},
 };
 use std::{
     fs::write,
-    path::{Path, PathBuf},
+    path::Path,
 };
-use cranelift::prelude::{types, AbiParam};
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use cranelift::module::FuncId;
+use cranelift::prelude::Signature;
+use lazy_static::lazy_static;
+
+lazy_static!{
+    pub static ref STORE_FUNCTIONS: Arc<RwLock<HashMap<FuncId, Signature>>>
+        = Arc::new(RwLock::new(HashMap::new()));
+}
 
 pub struct Aot {
     builder_ctx: FunctionBuilderContext,

@@ -23,7 +23,7 @@ fn main() -> Result<()> {
     aot.compile(FOO_CODE, &out)?;
     let linker = Command::new("cc")
         .args([
-            "-Wl,-s",
+            "-Wl,-s", "-fuse-ld=mold",
             &out.join("obj.o").display().to_string(),
             &out.join("runtime.o").display().to_string(),
             "-o",
