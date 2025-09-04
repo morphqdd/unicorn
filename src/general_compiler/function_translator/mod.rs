@@ -1,8 +1,10 @@
 use crate::frontend::parser::ast::expr::Expr;
+use anyhow::anyhow;
 use cranelift::frontend::{FunctionBuilder, Variable};
 use cranelift::module::{Linkage, Module};
-use cranelift::prelude::{AbiParam, Block, InstBuilder, Value, types};
+use cranelift::prelude::{AbiParam, Block, InstBuilder, Value, types, JumpTableData};
 use std::collections::HashMap;
+use cranelift::codegen::ir::JumpTable;
 
 struct FunctionTranslator<'a> {
     int: types::Type,
@@ -12,6 +14,68 @@ struct FunctionTranslator<'a> {
 }
 
 impl<'a> FunctionTranslator<'a> {
+    pub fn translate(&mut self, function: Expr) -> anyhow::Result<()> {
+        match function {
+            Expr::Function {
+                name,
+                function_ty,
+                body,
+            } => {
+
+                match *function_ty {
+                    Expr::FunctionType { params, .. } => {
+                        let mut sig = self.module.make_signature();
+
+                        let entry_block = self.builder.create_block();
+                        let int = self.int;
+                        for (i, (param, param_ty)) in params.iter().enumerate() {
+                            match (param, param_ty) {
+                                (Expr::Ident(name), Expr::Ident(_)) => {
+                                    sig.params.push(AbiParam::new(int));
+                                    self.builder.append_block_param(entry_block, int);
+                                    let val: Value = *self.builder
+                                        .block_params(entry_block)
+                                        .get(i).as_deref()
+                                        .unwrap();
+                                    let var = self.builder.declare_var(int);
+                                    self.builder.def_var(var, val);
+                                    self.variables.insert(name.to_string(), var);
+                                }
+                                _ => return Err(anyhow!("Expected {{ident}}({{type}})"))
+                            }
+                        }
+
+                        sig.params.push(AbiParam::new(int));
+                        self.builder.append_block_param(entry_block, int);
+                        let block_index: Value = *self.builder
+                            .block_params(entry_block)
+                            .get(params.len()).as_deref()
+                            .unwrap();
+
+                        self.builder.append_block_params_for_function_params(entry_block);
+                        sig.returns.push(AbiParam::new(int));
+
+                        for expr in body {
+                            self.translate_expr(expr);
+                        }
+
+                        self.builder.switch_to_block(entry_block);
+                        self.builder.seal_block(entry_block);
+
+                        // builder.ins()
+                        //     .br_table(block_index, builder.create_jump_table(
+                        //         JumpTableData::new()
+                        //     ));
+
+                    }
+                    _ => return Err(anyhow!("Not a function type"))
+                }
+            }
+            _ => return Err(anyhow!("Not a function")),
+        }
+        Ok(())
+    }
+
     pub fn translate_expr(&mut self, expr: Expr) -> Value {
         match expr {
             Expr::Ident(name) => {

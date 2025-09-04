@@ -1,5 +1,7 @@
+use crate::aot::STORE_FUNCTIONS;
 use crate::frontend::parser::ast::expr::Expr;
 use crate::general_compiler::runtime::init_runtime;
+use crate::general_compiler::runtime::virtual_process::create_process;
 use anyhow::*;
 use base64ct::{Base64, Encoding};
 use cranelift::codegen::ir::BlockArg;
@@ -8,13 +10,9 @@ use cranelift::prelude::{IntCC, MemFlags, TrapCode};
 use cranelift::{
     codegen::Context,
     module::{DataDescription, Module},
-    prelude::{
-        AbiParam, Block, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value,
-    },
+    prelude::{AbiParam, Block, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value},
 };
 use whirlpool::Digest;
-use crate::aot::STORE_FUNCTIONS;
-use crate::general_compiler::runtime::virtual_process::create_process;
 
 mod function_translator;
 mod runtime;
@@ -58,7 +56,7 @@ pub trait GeneralCompiler<T: Module> {
         builder.append_block_param(entry_block, target_type);
         let v = *builder.block_params(entry_block).get(0).unwrap();
         call_stdprint(&mut module, &mut builder, v);
-        let zero = builder.ins().iconst(target_type,0);
+        let zero = builder.ins().iconst(target_type, 0);
         builder.ins().return_(&[zero]);
 
         let mut whirlpool = whirlpool::Whirlpool::default();
@@ -67,14 +65,11 @@ pub trait GeneralCompiler<T: Module> {
         let hash = whirlpool.finalize();
         let hash = Base64::encode_string(hash.as_ref());
 
-        let id = module
-            .declare_function(
-                &hash,
-                Linkage::Export,
-                &builder.func.signature
-            )?;
+        let id = module.declare_function(&hash, Linkage::Export, &builder.func.signature)?;
 
-        STORE_FUNCTIONS.write().unwrap()
+        STORE_FUNCTIONS
+            .write()
+            .unwrap()
             .insert(id, builder.func.signature.clone());
         builder.finalize();
         module.define_function(id, &mut ctx)?;
@@ -105,20 +100,22 @@ pub trait GeneralCompiler<T: Module> {
         builder.ins().store(MemFlags::new(), ptr, processes_ptr, 0);
 
         let process_ptr = builder
-            .ins().load(target_type, MemFlags::new(), processes_ptr, 0);
+            .ins()
+            .load(target_type, MemFlags::new(), processes_ptr, 0);
         let process_ctx_ptr = builder
-            .ins().load(target_type, MemFlags::new(), process_ptr, 0);
+            .ins()
+            .load(target_type, MemFlags::new(), process_ptr, 0);
         let func_addr = builder
-            .ins().load(target_type, MemFlags::new(), process_ctx_ptr, 0);
+            .ins()
+            .load(target_type, MemFlags::new(), process_ctx_ptr, 0);
 
         let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(target_type));
         sig.returns.push(AbiParam::new(target_type));
-        let sig_ref= builder.import_signature(sig);
+        let sig_ref = builder.import_signature(sig);
         let v = builder.ins().iconst(target_type, 20);
 
-        builder.ins()
-            .call_indirect(sig_ref, func_addr, &[v]);
+        builder.ins().call_indirect(sig_ref, func_addr, &[v]);
 
         call_free(&mut module, &mut builder, process_ctx_ptr);
         call_free(&mut module, &mut builder, process_ptr);
@@ -126,7 +123,6 @@ pub trait GeneralCompiler<T: Module> {
 
         let zero = builder.ins().iconst(target_type, 0);
         builder.ins().return_(&[zero]);
-
 
         let id = module.declare_function("main", Linkage::Export, &mut builder.func.signature)?;
         builder.finalize();
@@ -147,7 +143,7 @@ pub fn call_malloc(
     builder: &mut FunctionBuilder,
     buffer_size: Value,
     block_after_call: Block,
-    block_args: &[BlockArg]
+    block_args: &[BlockArg],
 ) {
     let ty = module.target_config().pointer_type();
     let mut malloc_sig = module.make_signature();
@@ -164,30 +160,25 @@ pub fn call_malloc(
 
     let cond_block = builder.create_block();
     for _ in block_args {
-        builder.append_block_param(cond_block,ty);
+        builder.append_block_param(cond_block, ty);
     }
     builder.append_block_param(cond_block, ty);
 
     let trap_block = builder.create_block();
 
-    builder.ins().jump(
-        cond_block,
-        &[
-            block_args,
-            &[BlockArg::Value(ptr)]
-        ].concat()
-    );
+    builder
+        .ins()
+        .jump(cond_block, &[block_args, &[BlockArg::Value(ptr)]].concat());
 
     builder.switch_to_block(cond_block);
     builder.seal_block(cond_block);
 
     let len = builder.block_params(cond_block).len();
     let ptr = *builder.block_params(cond_block).last().unwrap();
-    let block_args: Vec<BlockArg> =
-        (&builder.block_params(cond_block)[..len-1])
-            .iter()
-            .map(|x| BlockArg::Value(*x))
-            .collect();
+    let block_args: Vec<BlockArg> = (&builder.block_params(cond_block)[..len - 1])
+        .iter()
+        .map(|x| BlockArg::Value(*x))
+        .collect();
 
     let is_null = builder.ins().icmp_imm(IntCC::Equal, ptr, 0);
     builder.ins().brif(

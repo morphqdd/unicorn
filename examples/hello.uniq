@@ -1,0 +1,4 @@
+main: -> nil {
+    let a: i64 = 20
+    stdprint { a }
+}
