@@ -3,6 +3,8 @@ use crate::{
     general_compiler::GeneralCompiler,
 };
 use anyhow::*;
+use cranelift::module::FuncId;
+use cranelift::prelude::Signature;
 use cranelift::{
     codegen::Context,
     module::{DataDescription, Module, default_libcall_names},
@@ -10,19 +12,14 @@ use cranelift::{
     object::{ObjectBuilder, ObjectModule},
     prelude::{Configurable, FunctionBuilderContext, settings},
 };
-use std::{
-    fs::write,
-    path::Path,
-};
+use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use cranelift::module::FuncId;
-use cranelift::prelude::Signature;
-use lazy_static::lazy_static;
+use std::{fs::write, path::Path};
 
-lazy_static!{
-    pub static ref STORE_FUNCTIONS: Arc<RwLock<HashMap<FuncId, Signature>>>
-        = Arc::new(RwLock::new(HashMap::new()));
+lazy_static! {
+    pub static ref STORE_FUNCTIONS: Arc<RwLock<HashMap<FuncId, Signature>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 }
 
 pub struct Aot {

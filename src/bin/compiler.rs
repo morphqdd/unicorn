@@ -1,26 +1,17 @@
+use anyhow::*;
 use std::{fs, path::PathBuf, process::Command};
 
-use anyhow::*;
-use unicorn::aot::Aot;
-
-const FOO_CODE: &str = r#"
-        main: -> i64 {
-            let a: i64 = foo { 20 30 }
-            stdprint { a }
-        }
-
-        foo: a(i64) b(i64) -> i64 {
-            add { a b }
-        }
-    "#;
+use unicorn::backend::Compiler;
 
 fn main() -> Result<()> {
     let out = PathBuf::from("build");
     if !out.exists() {
-        fs::create_dir(&out)?;
+        std::fs::create_dir(&out)?;
     }
-    let aot = Aot::default();
-    aot.compile(FOO_CODE, &out)?;
+    let input = fs::read_to_string("./examples/hello.uniq")?;
+    let compiler = Compiler::default();
+    compiler.compile(&input, &out)?;
+
     let linker = Command::new("cc")
         .args([
             "-Wl,-s",

@@ -26,9 +26,7 @@ pub fn init_runtime(
     let capacity = 8;
 
     let v_process_array_len = builder.declare_var(target_type);
-    let initial_len = builder
-        .ins()
-        .iconst(target_type, capacity);
+    let initial_len = builder.ins().iconst(target_type, capacity);
     let buffer_size = builder
         .ins()
         .iconst(target_type, capacity * v_process_ptr_size);
