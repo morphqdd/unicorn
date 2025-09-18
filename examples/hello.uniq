@@ -1,4 +1,4 @@
-main: -> nil {
+main: -> i64 {
     let a: i64 = 20
-    stdprint { a }
+    a
 }

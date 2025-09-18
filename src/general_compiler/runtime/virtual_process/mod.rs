@@ -45,7 +45,7 @@ pub fn create_process(module: &mut dyn Module, builder: &mut FunctionBuilder) ->
     let func_addr = builder.ins().func_addr(target_type, callee);
     builder
         .ins()
-        .store(MemFlags::new(), func_addr, process_ctx_ptr, 0);
+        .store(MemFlags::new(), func_addr, process_ctx_ptr, 24);
     builder
         .ins()
         .store(MemFlags::new(), process_ctx_ptr, new_process_ptr, 0);

@@ -1,5 +1,6 @@
 use crate::aot::STORE_FUNCTIONS;
 use crate::frontend::parser::ast::expr::Expr;
+use crate::general_compiler::function_translator::{FunctionTranslator, translate};
 use crate::general_compiler::runtime::init_runtime;
 use crate::general_compiler::runtime::virtual_process::create_process;
 use anyhow::*;
@@ -12,10 +13,12 @@ use cranelift::{
     module::{DataDescription, Module},
     prelude::{AbiParam, Block, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value},
 };
+use std::collections::HashMap;
 use whirlpool::Digest;
 
 mod function_translator;
 mod runtime;
+mod trap;
 mod type_def;
 const REDUCTIONS_LIMIT: i64 = 2;
 
@@ -29,7 +32,7 @@ pub trait GeneralCompiler<T: Module> {
     where
         Self: Sized;
     fn unwrap(self) -> (FunctionBuilderContext, Context, DataDescription, T);
-    fn translate(self, _exprs: Vec<Expr>) -> Result<Self>
+    fn translate(self, exprs: Vec<Expr>) -> Result<Self>
     where
         Self: Sized,
     {
@@ -38,42 +41,16 @@ pub trait GeneralCompiler<T: Module> {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
         let target_type = module.target_config().pointer_type();
 
-        builder
-            .func
-            .signature
-            .params
-            .push(AbiParam::new(target_type));
-
-        builder
-            .func
-            .signature
-            .returns
-            .push(AbiParam::new(target_type));
-
-        let entry_block = builder.create_block();
-        builder.switch_to_block(entry_block);
-        builder.seal_block(entry_block);
-        builder.append_block_param(entry_block, target_type);
-        let v = *builder.block_params(entry_block).get(0).unwrap();
-        call_stdprint(&mut module, &mut builder, v);
-        let zero = builder.ins().iconst(target_type, 0);
-        builder.ins().return_(&[zero]);
-
-        let mut whirlpool = whirlpool::Whirlpool::default();
-        let name = b"main";
-        Digest::update(&mut whirlpool, name);
-        let hash = whirlpool.finalize();
-        let hash = Base64::encode_string(hash.as_ref());
-
-        let id = module.declare_function(&hash, Linkage::Export, &builder.func.signature)?;
-
-        STORE_FUNCTIONS
-            .write()
-            .unwrap()
-            .insert(id, builder.func.signature.clone());
-        builder.finalize();
-        module.define_function(id, &mut ctx)?;
-        module.clear_context(&mut ctx);
+        translate(
+            FunctionTranslator::new(
+                target_type,
+                HashMap::new(),
+                &mut module,
+                &mut ctx,
+                &mut builder_ctx,
+            ),
+            exprs[0].clone(),
+        )?;
 
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
         let target_type = module.target_config().pointer_type();
@@ -107,7 +84,7 @@ pub trait GeneralCompiler<T: Module> {
             .load(target_type, MemFlags::new(), process_ptr, 0);
         let func_addr = builder
             .ins()
-            .load(target_type, MemFlags::new(), process_ctx_ptr, 0);
+            .load(target_type, MemFlags::new(), process_ctx_ptr, 24);
 
         let mut sig = module.make_signature();
         sig.params.push(AbiParam::new(target_type));
