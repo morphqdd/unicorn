@@ -1,10 +1,8 @@
-use crate::aot::STORE_FUNCTIONS;
 use crate::frontend::parser::ast::expr::Expr;
 use crate::general_compiler::function_translator::{FunctionTranslator, translate};
 use crate::general_compiler::runtime::init_runtime;
 use crate::general_compiler::runtime::virtual_process::create_process;
 use anyhow::*;
-use base64ct::{Base64, Encoding};
 use cranelift::codegen::ir::BlockArg;
 use cranelift::module::Linkage;
 use cranelift::prelude::{IntCC, MemFlags, TrapCode};
@@ -38,7 +36,7 @@ pub trait GeneralCompiler<T: Module> {
     {
         let (mut builder_ctx, mut ctx, data_description, mut module) = self.unwrap();
 
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
         let target_type = module.target_config().pointer_type();
 
         translate(

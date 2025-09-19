@@ -1,37 +1,23 @@
 use anyhow::{Result, bail};
 use base64ct::{Base64, Encoding};
 use cranelift::{
-    codegen::{
-        Context,
-        ir::{BlockArg, BlockCall, JumpTable, SigRef, ValueListPool},
-    },
+    codegen::{Context, ir::BlockArg},
     frontend::Switch,
     module::{FuncId, Linkage, Module, default_libcall_names},
     native,
     object::{ObjectBuilder, ObjectModule},
     prelude::{
         AbiParam, Block, Configurable, EntityRef, FunctionBuilder, FunctionBuilderContext,
-        InstBuilder, IntCC, JumpTableData, MemFlags, TrapCode, Value, Variable,
-        settings::{self, builder},
+        InstBuilder, IntCC, MemFlags, TrapCode, Value, Variable,
+        settings::{self},
     },
 };
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    fs::write,
-    path::Path,
-    rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    vec,
-};
+use std::{cell::RefCell, collections::HashMap, fs::write, path::Path, rc::Rc, vec};
 use whirlpool::{Digest, Whirlpool};
 
 use crate::{
     frontend::parser::{ast::expr::Expr, parser},
-    general_compiler::{call_malloc, call_stdprint},
+    general_compiler::call_malloc,
 };
 
 const PROCESS_CTX_BUFFER_SIZE: i64 = 40;
@@ -94,7 +80,7 @@ impl Compiler {
             self.module
                 .declare_function("stdprint", Linkage::Import, &stdprint_sig)?;
         let mut wp = Whirlpool::new();
-        Digest::update(&mut wp,"stdprint");
+        Digest::update(&mut wp, "stdprint");
         let name = Base64::encode_string(&wp.finalize());
         FUNCTIONS.with(|map| {
             map.borrow_mut().insert(
@@ -111,20 +97,16 @@ impl Compiler {
         add_sig.params.push(AbiParam::new(target_type));
         add_sig.params.push(AbiParam::new(target_type));
         add_sig.returns.push(AbiParam::new(target_type));
-        let callee_add =
-            self.module
-                .declare_function("add", Linkage::Import, &add_sig)?;
+        let callee_add = self
+            .module
+            .declare_function("add", Linkage::Import, &add_sig)?;
         let mut wp = Whirlpool::new();
-        Digest::update(&mut wp,"add");
+        Digest::update(&mut wp, "add");
         let name = Base64::encode_string(&wp.finalize());
         FUNCTIONS.with(|map| {
             map.borrow_mut().insert(
                 name,
-                (
-                    callee_add,
-                    add_sig.params.len(),
-                    add_sig.returns.len(),
-                ),
+                (callee_add, add_sig.params.len(), add_sig.returns.len()),
             )
         });
 
@@ -309,8 +291,12 @@ impl Compiler {
 
         let mut last_block_i = 0;
         for expression in body {
-            let (indecies, last_block, blocks) =
-                self.translate_expression(expression, &mut builder, ctx_ptr_var, &mut translation_ctx)?;
+            let (indecies, last_block, blocks) = self.translate_expression(
+                expression,
+                &mut builder,
+                ctx_ptr_var,
+                &mut translation_ctx,
+            )?;
 
             for (index, block) in indecies.iter().zip(blocks) {
                 switch.set_entry(*index as u128, block);
@@ -369,7 +355,7 @@ impl Compiler {
         expression: Expr,
         builder: &mut FunctionBuilder,
         ctx_ptr_var: Variable,
-        translation_ctx: &mut TranslationContext
+        translation_ctx: &mut TranslationContext,
     ) -> Result<(Vec<usize>, usize, Vec<Block>)> {
         let target_type = self.module.target_config().pointer_type();
         match expression {
@@ -391,11 +377,7 @@ impl Compiler {
 
                 translation_ctx.block_counter += 1;
 
-                Ok((
-                    vec![block_count],
-                    translation_ctx.block_counter,
-                    vec![b],
-                ))
+                Ok((vec![block_count], translation_ctx.block_counter, vec![b]))
             }
             Expr::Ident(name) => {
                 let b = builder.create_block();
@@ -419,7 +401,7 @@ impl Compiler {
                 builder
                     .ins()
                     .store(MemFlags::new(), val, ctx_ptr, PROCESS_CTX_TEMP_VAL);
-                
+
                 let block_count = translation_ctx.block_counter;
 
                 let block_count_val = builder.ins().iconst(target_type, (block_count + 1) as i64);
@@ -427,18 +409,18 @@ impl Compiler {
 
                 translation_ctx.block_counter += 1;
 
-                Ok((
-                    vec![block_count],
-                    translation_ctx.block_counter,
-                    vec![b],
-                ))
+                Ok((vec![block_count], translation_ctx.block_counter, vec![b]))
             }
             Expr::Call { ident, args } => {
                 let mut indecies = vec![];
                 let mut blocks = vec![];
                 for expression in args {
-                    let (indecies_, last_block_, blocks_) =
-                        self.translate_expression(expression, builder, ctx_ptr_var, translation_ctx)?;
+                    let (indecies_, last_block_, blocks_) = self.translate_expression(
+                        expression,
+                        builder,
+                        ctx_ptr_var,
+                        translation_ctx,
+                    )?;
                     indecies = [indecies, indecies_].concat();
                     blocks = [blocks, blocks_].concat();
                 }
@@ -470,10 +452,12 @@ impl Compiler {
                 let sig_ref = builder.import_signature(sig);
                 let _99 = builder.ins().iconst(target_type, 20);
                 let call = builder.ins().call_indirect(sig_ref, callee, &[_99, _99]);
-                
+
                 let res = *builder.inst_results(call).first().unwrap();
-    
-                builder.ins().store(MemFlags::new(), res, ctx_ptr, PROCESS_CTX_TEMP_VAL);
+
+                builder
+                    .ins()
+                    .store(MemFlags::new(), res, ctx_ptr, PROCESS_CTX_TEMP_VAL);
 
                 /*let deps_ptr = builder.ins().load(
                     target_type,
@@ -481,7 +465,6 @@ impl Compiler {
                     ctx_ptr,
                     PROCESS_CTX_DEPENDENCIES,
                 );*/
-
 
                 let block_count = translation_ctx.block_counter;
 
@@ -559,10 +542,9 @@ impl Compiler {
                 builder
                     .ins()
                     .store(MemFlags::new(), val, ptr_with_offset, 0);
-                let next_block = builder.ins().iconst(
-                    target_type,
-                    (translation_ctx.block_counter + 1) as i64,
-                );
+                let next_block = builder
+                    .ins()
+                    .iconst(target_type, (translation_ctx.block_counter + 1) as i64);
                 builder.ins().return_(&[next_block]);
 
                 let Expr::Ident(name) = *name else {

@@ -5,15 +5,14 @@ use crate::general_compiler::trap::CompilerTrapCode;
 use anyhow::anyhow;
 use base64ct::{Base64, Encoding};
 use cranelift::codegen::Context;
-use cranelift::codegen::ir::{BlockArg, BlockCall, JumpTable, ValueListPool};
+use cranelift::codegen::ir::{BlockArg, BlockCall, ValueListPool};
 use cranelift::frontend::{FunctionBuilder, Variable};
-use cranelift::module::{FuncId, Linkage, Module};
+use cranelift::module::{Linkage, Module};
 use cranelift::prelude::{
     AbiParam, Block, FunctionBuilderContext, InstBuilder, IntCC, JumpTableData, MemFlags, TrapCode,
     Value, types,
 };
 use std::collections::HashMap;
-use std::ops::DerefMut;
 use whirlpool::Digest;
 
 pub struct FunctionTranslator<'a> {
@@ -63,7 +62,7 @@ pub fn translate(ft: FunctionTranslator, function: Expr) -> anyhow::Result<()> {
             function_ty,
             body,
         } => match *function_ty {
-            Expr::FunctionType { params, .. } => {
+            Expr::FunctionType { .. } => {
                 let mut sig = module.make_signature();
 
                 let entry_block = builder.create_block();

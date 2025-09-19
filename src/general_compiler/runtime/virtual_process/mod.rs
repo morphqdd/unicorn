@@ -2,7 +2,7 @@ use crate::aot::STORE_FUNCTIONS;
 use crate::general_compiler::call_malloc;
 use cranelift::codegen::ir::BlockArg;
 use cranelift::module::Module;
-use cranelift::prelude::{Block, FunctionBuilder, InstBuilder, MemFlags, Variable};
+use cranelift::prelude::{FunctionBuilder, InstBuilder, MemFlags, Variable};
 use std::ops::Deref;
 
 pub fn create_process(module: &mut dyn Module, builder: &mut FunctionBuilder) -> Variable {
