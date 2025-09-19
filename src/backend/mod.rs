@@ -25,6 +25,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    vec,
 };
 use whirlpool::{Digest, Whirlpool};
 
@@ -33,11 +34,24 @@ use crate::{
     general_compiler::{call_malloc, call_stdprint},
 };
 
+const PROCESS_CTX_BUFFER_SIZE: i64 = 40;
+const PROCESS_CTX_VARS: i32 = 0;
+const PROCESS_CTX_VARS_LEN: i32 = 8;
+const PROCESS_CTX_FUNC_ADDR: i32 = 16;
+const PROCESS_CTX_TEMP_VAL: i32 = 24;
+const PROCESS_CTX_DEPENDENCIES: i32 = 32;
+
 thread_local! {
     pub static VARIABLES: Rc<RefCell<HashMap<String, usize>>> = Rc::new(RefCell::new(HashMap::new()));
 }
 
+thread_local! {
+    pub static FUNCTIONS: Rc<RefCell<HashMap<String, (FuncId, usize, usize)>>>
+    = Rc::new(RefCell::new(HashMap::new()));
+}
+
 pub static BLOCK_COUNTER: AtomicUsize = AtomicUsize::new(0);
+pub static VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Compiler {
     module: ObjectModule,
@@ -72,10 +86,57 @@ impl Compiler {
         Ok(())
     }
 
+    fn declare_runtime_funcitons(&mut self) -> Result<()> {
+        let target_type = self.module.target_config().pointer_type();
+        let mut stdprint_sig = self.module.make_signature();
+        stdprint_sig.params.push(AbiParam::new(target_type));
+        let callee_stdprint =
+            self.module
+                .declare_function("stdprint", Linkage::Import, &stdprint_sig)?;
+        let mut wp = Whirlpool::new();
+        Digest::update(&mut wp,"stdprint");
+        let name = Base64::encode_string(&wp.finalize());
+        FUNCTIONS.with(|map| {
+            map.borrow_mut().insert(
+                name,
+                (
+                    callee_stdprint,
+                    stdprint_sig.params.len(),
+                    stdprint_sig.returns.len(),
+                ),
+            )
+        });
+
+        let mut add_sig = self.module.make_signature();
+        add_sig.params.push(AbiParam::new(target_type));
+        add_sig.params.push(AbiParam::new(target_type));
+        add_sig.returns.push(AbiParam::new(target_type));
+        let callee_add =
+            self.module
+                .declare_function("add", Linkage::Import, &add_sig)?;
+        let mut wp = Whirlpool::new();
+        Digest::update(&mut wp,"add");
+        let name = Base64::encode_string(&wp.finalize());
+        FUNCTIONS.with(|map| {
+            map.borrow_mut().insert(
+                name,
+                (
+                    callee_add,
+                    add_sig.params.len(),
+                    add_sig.returns.len(),
+                ),
+            )
+        });
+
+        Ok(())
+    }
+
     pub fn translate(&mut self, expressions: Vec<Expr>) -> Result<()> {
         let target_type = self.module.target_config().pointer_type();
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut ctx = self.module.make_context();
+
+        self.declare_runtime_funcitons()?;
 
         let expression = expressions.first().unwrap().clone();
         let func_id = self.translate_function(expression, &mut builder_ctx, &mut ctx)?;
@@ -88,7 +149,7 @@ impl Compiler {
         sig.returns.push(AbiParam::new(target_type));
 
         let sig_ref = builder.import_signature(sig);
-        
+
         builder
             .func
             .signature
@@ -98,28 +159,34 @@ impl Compiler {
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
 
-        let buff = builder.ins().iconst(target_type, 32);
+        let buff = builder.ins().iconst(target_type, PROCESS_CTX_BUFFER_SIZE);
         let after_call = builder.create_block();
         builder.append_block_param(after_call, target_type);
         call_malloc(&mut self.module, &mut builder, buff, after_call, &[]);
         builder.switch_to_block(after_call);
         builder.seal_block(after_call);
         let ctx_ptr = *builder.block_params(after_call).first().unwrap();
-     
+
         let after_call = builder.create_block();
         builder.append_block_param(after_call, target_type);
-        let buff = builder.ins().iconst(target_type, 8);
+        let buff = builder.ins().iconst(target_type, 0);
         call_malloc(&mut self.module, &mut builder, buff, after_call, &[]);
         builder.switch_to_block(after_call);
         builder.seal_block(after_call);
 
         let vars_ptr = *builder.block_params(after_call).first().unwrap();
-        let len = builder.ins().iconst(target_type, 1);
+        let len = builder.ins().iconst(target_type, 0);
         let zero = builder.ins().iconst(target_type, 0);
 
-        builder.ins().store(MemFlags::new(), vars_ptr, ctx_ptr, 0);
-        builder.ins().store(MemFlags::new(), len, ctx_ptr, 8);
-        builder.ins().store(MemFlags::new(), zero, ctx_ptr, 24);
+        builder
+            .ins()
+            .store(MemFlags::new(), vars_ptr, ctx_ptr, PROCESS_CTX_VARS);
+        builder
+            .ins()
+            .store(MemFlags::new(), len, ctx_ptr, PROCESS_CTX_VARS_LEN);
+        builder
+            .ins()
+            .store(MemFlags::new(), zero, ctx_ptr, PROCESS_CTX_TEMP_VAL);
 
         let while_block_entry = builder.create_block();
         let condition_block = builder.create_block();
@@ -142,7 +209,7 @@ impl Compiler {
         builder.switch_to_block(condition_block);
         let next_block = builder.use_var(next_block_var);
         let cond = builder.ins().icmp_imm(IntCC::NotEqual, next_block, -1);
-        builder.ins().brif(cond, action_block, &[], exit_block, &[]); 
+        builder.ins().brif(cond, action_block, &[], exit_block, &[]);
 
         builder.switch_to_block(action_block);
         builder.seal_block(action_block);
@@ -150,14 +217,13 @@ impl Compiler {
         let ctx_ptr = builder.use_var(ctx_ptr_var);
         let callee = self.module.declare_func_in_func(func_id, builder.func);
         let callee = builder.ins().func_addr(target_type, callee);
-    
+
         let next_block = builder.use_var(next_block_var);
 
         let call = builder
             .ins()
             .call_indirect(sig_ref, callee, &[next_block, ctx_ptr]);
 
-       
         let next_block = *builder.inst_results(call).first().unwrap();
 
         builder.def_var(next_block_var, next_block);
@@ -169,7 +235,7 @@ impl Compiler {
 
         let ret = builder
             .ins()
-            .load(target_type, MemFlags::new(), ctx_ptr, 24);
+            .load(target_type, MemFlags::new(), ctx_ptr, PROCESS_CTX_TEMP_VAL);
 
         builder.ins().return_(&[ret]);
 
@@ -250,7 +316,6 @@ impl Compiler {
             }
 
             last_block_i = last_block;
-
         }
 
         let final_block = builder.create_block();
@@ -258,7 +323,6 @@ impl Compiler {
         let neg = builder.ins().iconst(target_type, -1);
         builder.ins().return_(&[neg]);
         switch.set_entry(last_block_i as u128, final_block);
-
 
         builder.switch_to_block(switch_block);
 
@@ -286,6 +350,13 @@ impl Compiler {
             .declare_function(&encoded_function_name, Linkage::Export, &sig)?;
         self.module.define_function(id, ctx)?;
 
+        FUNCTIONS.with(|map| {
+            map.borrow_mut().insert(
+                encoded_function_name.clone(),
+                (id, sig.params.len(), sig.returns.len()),
+            );
+        });
+
         println!("{}", ctx.func);
         println!("{:?}", VARIABLES.with(|map| map.clone()));
         self.module.clear_context(ctx);
@@ -307,7 +378,9 @@ impl Compiler {
                 let lit_num: i64 = lit.parse()?;
 
                 let imm = builder.ins().iconst(target_type, lit_num);
-                builder.ins().store(MemFlags::new(), imm, ctx_ptr, 24);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), imm, ctx_ptr, PROCESS_CTX_TEMP_VAL);
 
                 let block_count = BLOCK_COUNTER.load(Ordering::Relaxed);
 
@@ -328,7 +401,10 @@ impl Compiler {
                 let ctx_ptr: Value = builder.use_var(ctx_ptr_var);
                 let val_index = VARIABLES.with(|map| *map.borrow().get(&name).unwrap());
 
-                let vars_ptr = builder.ins().load(target_type, MemFlags::new(), ctx_ptr, 0);
+                let vars_ptr =
+                    builder
+                        .ins()
+                        .load(target_type, MemFlags::new(), ctx_ptr, PROCESS_CTX_VARS);
 
                 let val_index = builder.ins().iconst(target_type, val_index as i64);
                 let offset = builder.ins().imul_imm(val_index, 8);
@@ -338,7 +414,9 @@ impl Compiler {
                 let val = builder
                     .ins()
                     .load(target_type, MemFlags::new(), ptr_with_offset, 0);
-                builder.ins().store(MemFlags::new(), val, ctx_ptr, 24);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), val, ctx_ptr, PROCESS_CTX_TEMP_VAL);
 
                 let block_count = BLOCK_COUNTER.load(Ordering::Relaxed);
 
@@ -353,7 +431,68 @@ impl Compiler {
                     vec![b],
                 ))
             }
-            Expr::Call { ident, args } => todo!(),
+            Expr::Call { ident, args } => {
+                let mut indecies = vec![];
+                let mut blocks = vec![];
+                for expression in args {
+                    let (indecies_, last_block_, blocks_) =
+                        self.translate_expression(expression, builder, ctx_ptr_var)?;
+                    indecies = [indecies, indecies_].concat();
+                    blocks = [blocks, blocks_].concat();
+                }
+
+                let b = builder.create_block();
+                builder.switch_to_block(b);
+                let ctx_ptr = builder.use_var(ctx_ptr_var);
+                let mut wp = Whirlpool::new();
+
+                let Expr::Ident(name) = *ident else {
+                    bail!("Not a ident")
+                };
+
+                Digest::update(&mut wp, name.as_bytes());
+                let encoded_function_name = Base64::encode_string(&wp.finalize());
+
+                let mut sig = self.module.make_signature();
+                let (func_id, params, returns) =
+                    FUNCTIONS.with(|map| *map.borrow().get(&encoded_function_name).unwrap());
+                for _ in 0..params {
+                    sig.params.push(AbiParam::new(target_type));
+                }
+                for _ in 0..returns {
+                    sig.returns.push(AbiParam::new(target_type));
+                }
+
+                let callee = self.module.declare_func_in_func(func_id, builder.func);
+                let callee = builder.ins().func_addr(target_type, callee);
+                let sig_ref = builder.import_signature(sig);
+                let _99 = builder.ins().iconst(target_type, 20);
+                let call = builder.ins().call_indirect(sig_ref, callee, &[_99, _99]);
+                
+                let res = *builder.inst_results(call).first().unwrap();
+    
+                builder.ins().store(MemFlags::new(), res, ctx_ptr, PROCESS_CTX_TEMP_VAL);
+
+                /*let deps_ptr = builder.ins().load(
+                    target_type,
+                    MemFlags::new(),
+                    ctx_ptr,
+                    PROCESS_CTX_DEPENDENCIES,
+                );*/
+
+                let block_count = BLOCK_COUNTER.load(Ordering::Relaxed);
+
+                let block_count_val = builder.ins().iconst(target_type, (block_count + 1) as i64);
+                builder.ins().return_(&[block_count_val]);
+
+                BLOCK_COUNTER.store(block_count + 1, Ordering::Relaxed);
+
+                Ok((
+                    [indecies, vec![block_count]].concat(),
+                    BLOCK_COUNTER.load(Ordering::Relaxed),
+                    [blocks, vec![b]].concat(),
+                ))
+            }
             Expr::Function {
                 name,
                 function_ty,
@@ -362,13 +501,19 @@ impl Compiler {
             Expr::FunctionType { params, ret_ty } => todo!(),
             Expr::Assign((name, _), expr) => {
                 let (indecies, block_index, blocks) =
-                self.translate_expression(*expr, builder, ctx_ptr_var)?;
+                    self.translate_expression(*expr, builder, ctx_ptr_var)?;
                 let b = builder.create_block();
                 builder.switch_to_block(b);
 
                 let ctx_ptr = builder.use_var(ctx_ptr_var);
-                let old_vars_ptr = builder.ins().load(target_type, MemFlags::new(), ctx_ptr, 0);
-                let old_vars_ptr_len = builder.ins().load(target_type, MemFlags::new(), ctx_ptr, 8);
+                let old_vars_ptr =
+                    builder
+                        .ins()
+                        .load(target_type, MemFlags::new(), ctx_ptr, PROCESS_CTX_VARS);
+                let old_vars_ptr_len =
+                    builder
+                        .ins()
+                        .load(target_type, MemFlags::new(), ctx_ptr, PROCESS_CTX_VARS_LEN);
 
                 let new_len = builder.ins().iadd_imm(old_vars_ptr_len, 1);
                 let new_buffer_size = builder.ins().imul_imm(new_len, 8);
@@ -392,16 +537,21 @@ impl Compiler {
                 let ctx_ptr = builder.use_var(ctx_ptr_var);
                 let new_len = builder.use_var(new_len_var);
 
-                builder.ins().store(MemFlags::new(), new_ptr, ctx_ptr, 0);
-                builder.ins().store(MemFlags::new(), new_len, ctx_ptr, 8);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), new_ptr, ctx_ptr, PROCESS_CTX_VARS);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), new_len, ctx_ptr, PROCESS_CTX_VARS_LEN);
 
                 let last_i = builder.ins().iadd_imm(new_len, -1);
                 let offset = builder.ins().imul_imm(last_i, 8);
                 let ptr_with_offset = builder.ins().iadd(new_ptr, offset);
 
-                let val = builder
-                    .ins()
-                    .load(target_type, MemFlags::new(), ctx_ptr, 24);
+                let val =
+                    builder
+                        .ins()
+                        .load(target_type, MemFlags::new(), ctx_ptr, PROCESS_CTX_TEMP_VAL);
 
                 builder
                     .ins()
@@ -416,7 +566,9 @@ impl Compiler {
                     bail!("Not a ident")
                 };
 
-                VARIABLES.with(|map| map.borrow_mut().insert(name, 1));
+                let val = VAR_COUNTER.load(Ordering::Relaxed);
+                VARIABLES.with(|map| map.borrow_mut().insert(name, val));
+                VAR_COUNTER.store(val + 1, Ordering::Relaxed);
 
                 BLOCK_COUNTER.store(block_index + 1, Ordering::Relaxed);
                 Ok((
