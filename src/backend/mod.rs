@@ -42,16 +42,16 @@ const PROCESS_CTX_TEMP_VAL: i32 = 24;
 const PROCESS_CTX_DEPENDENCIES: i32 = 32;
 
 thread_local! {
-    pub static VARIABLES: Rc<RefCell<HashMap<String, usize>>> = Rc::new(RefCell::new(HashMap::new()));
-}
-
-thread_local! {
     pub static FUNCTIONS: Rc<RefCell<HashMap<String, (FuncId, usize, usize)>>>
     = Rc::new(RefCell::new(HashMap::new()));
 }
 
-pub static BLOCK_COUNTER: AtomicUsize = AtomicUsize::new(0);
-pub static VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+#[derive(Default)]
+struct TranslationContext {
+    variables: HashMap<String, usize>,
+    var_counter: usize,
+    block_counter: usize,
+}
 
 pub struct Compiler {
     module: ObjectModule,
@@ -261,6 +261,7 @@ impl Compiler {
     ) -> Result<FuncId> {
         let target_type = self.module.target_config().pointer_type();
         let mut builder = FunctionBuilder::new(&mut ctx.func, builder_ctx);
+        let mut translation_ctx = TranslationContext::default();
 
         let Expr::Function {
             name,
@@ -309,7 +310,7 @@ impl Compiler {
         let mut last_block_i = 0;
         for expression in body {
             let (indecies, last_block, blocks) =
-                self.translate_expression(expression, &mut builder, ctx_ptr_var)?;
+                self.translate_expression(expression, &mut builder, ctx_ptr_var, &mut translation_ctx)?;
 
             for (index, block) in indecies.iter().zip(blocks) {
                 switch.set_entry(*index as u128, block);
@@ -358,16 +359,17 @@ impl Compiler {
         });
 
         println!("{}", ctx.func);
-        println!("{:?}", VARIABLES.with(|map| map.clone()));
+        println!("{:?}", translation_ctx.variables);
         self.module.clear_context(ctx);
         Ok(id)
     }
 
-    pub fn translate_expression(
+    fn translate_expression(
         &mut self,
         expression: Expr,
         builder: &mut FunctionBuilder,
         ctx_ptr_var: Variable,
+        translation_ctx: &mut TranslationContext
     ) -> Result<(Vec<usize>, usize, Vec<Block>)> {
         let target_type = self.module.target_config().pointer_type();
         match expression {
@@ -382,16 +384,16 @@ impl Compiler {
                     .ins()
                     .store(MemFlags::new(), imm, ctx_ptr, PROCESS_CTX_TEMP_VAL);
 
-                let block_count = BLOCK_COUNTER.load(Ordering::Relaxed);
+                let block_count = translation_ctx.block_counter;
 
                 let block_count_val = builder.ins().iconst(target_type, (block_count + 1) as i64);
                 builder.ins().return_(&[block_count_val]);
 
-                BLOCK_COUNTER.store(block_count + 1, Ordering::Relaxed);
+                translation_ctx.block_counter += 1;
 
                 Ok((
                     vec![block_count],
-                    BLOCK_COUNTER.load(Ordering::Relaxed),
+                    translation_ctx.block_counter,
                     vec![b],
                 ))
             }
@@ -399,7 +401,7 @@ impl Compiler {
                 let b = builder.create_block();
                 builder.switch_to_block(b);
                 let ctx_ptr: Value = builder.use_var(ctx_ptr_var);
-                let val_index = VARIABLES.with(|map| *map.borrow().get(&name).unwrap());
+                let val_index = *translation_ctx.variables.get(&name).unwrap();
 
                 let vars_ptr =
                     builder
@@ -417,17 +419,17 @@ impl Compiler {
                 builder
                     .ins()
                     .store(MemFlags::new(), val, ctx_ptr, PROCESS_CTX_TEMP_VAL);
-
-                let block_count = BLOCK_COUNTER.load(Ordering::Relaxed);
+                
+                let block_count = translation_ctx.block_counter;
 
                 let block_count_val = builder.ins().iconst(target_type, (block_count + 1) as i64);
                 builder.ins().return_(&[block_count_val]);
 
-                BLOCK_COUNTER.store(block_count + 1, Ordering::Relaxed);
+                translation_ctx.block_counter += 1;
 
                 Ok((
                     vec![block_count],
-                    BLOCK_COUNTER.load(Ordering::Relaxed),
+                    translation_ctx.block_counter,
                     vec![b],
                 ))
             }
@@ -436,7 +438,7 @@ impl Compiler {
                 let mut blocks = vec![];
                 for expression in args {
                     let (indecies_, last_block_, blocks_) =
-                        self.translate_expression(expression, builder, ctx_ptr_var)?;
+                        self.translate_expression(expression, builder, ctx_ptr_var, translation_ctx)?;
                     indecies = [indecies, indecies_].concat();
                     blocks = [blocks, blocks_].concat();
                 }
@@ -480,16 +482,17 @@ impl Compiler {
                     PROCESS_CTX_DEPENDENCIES,
                 );*/
 
-                let block_count = BLOCK_COUNTER.load(Ordering::Relaxed);
+
+                let block_count = translation_ctx.block_counter;
 
                 let block_count_val = builder.ins().iconst(target_type, (block_count + 1) as i64);
                 builder.ins().return_(&[block_count_val]);
 
-                BLOCK_COUNTER.store(block_count + 1, Ordering::Relaxed);
+                translation_ctx.block_counter += 1;
 
                 Ok((
                     [indecies, vec![block_count]].concat(),
-                    BLOCK_COUNTER.load(Ordering::Relaxed),
+                    translation_ctx.block_counter,
                     [blocks, vec![b]].concat(),
                 ))
             }
@@ -501,7 +504,7 @@ impl Compiler {
             Expr::FunctionType { params, ret_ty } => todo!(),
             Expr::Assign((name, _), expr) => {
                 let (indecies, block_index, blocks) =
-                    self.translate_expression(*expr, builder, ctx_ptr_var)?;
+                    self.translate_expression(*expr, builder, ctx_ptr_var, translation_ctx)?;
                 let b = builder.create_block();
                 builder.switch_to_block(b);
 
@@ -558,7 +561,7 @@ impl Compiler {
                     .store(MemFlags::new(), val, ptr_with_offset, 0);
                 let next_block = builder.ins().iconst(
                     target_type,
-                    (BLOCK_COUNTER.load(Ordering::Relaxed) + 1) as i64,
+                    (translation_ctx.block_counter + 1) as i64,
                 );
                 builder.ins().return_(&[next_block]);
 
@@ -566,14 +569,15 @@ impl Compiler {
                     bail!("Not a ident")
                 };
 
-                let val = VAR_COUNTER.load(Ordering::Relaxed);
-                VARIABLES.with(|map| map.borrow_mut().insert(name, val));
-                VAR_COUNTER.store(val + 1, Ordering::Relaxed);
+                let val = translation_ctx.var_counter;
+                translation_ctx.variables.insert(name, val);
+                translation_ctx.var_counter += 1;
 
-                BLOCK_COUNTER.store(block_index + 1, Ordering::Relaxed);
+                translation_ctx.block_counter += 1;
+
                 Ok((
                     [indecies, vec![block_index]].concat(),
-                    BLOCK_COUNTER.load(Ordering::Relaxed),
+                    translation_ctx.block_counter,
                     [blocks, vec![b]].concat(),
                 ))
             }
