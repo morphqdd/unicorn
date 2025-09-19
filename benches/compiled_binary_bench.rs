@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 fn bench_aot_binary(c: &mut Criterion) {
     c.bench_function("compiled_binary", |b| {
@@ -11,7 +11,6 @@ fn bench_aot_binary(c: &mut Criterion) {
                 assert_eq!(status.code(), Some(20));
             }
         });
-
     });
 }
 
