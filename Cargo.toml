@@ -3,6 +3,11 @@ name = "unicorn"
 version = "0.1.0"
 edition = "2024"
 
+[[bench]]
+name = "compiled_binary"
+path = "./benches/compiled_binary_bench.rs"
+harness = false
+
 [dev-dependencies]
 criterion = { version = "0.7.0", features = ['html_reports']}
 

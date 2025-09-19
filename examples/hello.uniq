@@ -1,5 +1,8 @@
 main: -> i64 {
-    let a: i64 = 20
-    let b: i64 = a
-    add { 20 20 } 
+  let b: i64 = 20
+  b
+}
+
+foo: -> i64 {
+  30
 }

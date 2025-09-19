@@ -119,9 +119,10 @@ impl Compiler {
         let mut ctx = self.module.make_context();
 
         self.declare_runtime_funcitons()?;
-
-        let expression = expressions.first().unwrap().clone();
-        let func_id = self.translate_function(expression, &mut builder_ctx, &mut ctx)?;
+        
+        for expression in expressions {
+            self.translate_function(expression, &mut builder_ctx, &mut ctx)?;
+        }
 
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
 
@@ -195,6 +196,13 @@ impl Compiler {
 
         builder.switch_to_block(action_block);
         builder.seal_block(action_block);
+
+        
+        let mut wp = Whirlpool::new();
+        Digest::update(&mut wp, "main");
+        let ident = Base64::encode_string(&wp.finalize());
+
+        let (func_id, _, _ )= FUNCTIONS.with(|map| *map.borrow().get(&ident).unwrap());
 
         let ctx_ptr = builder.use_var(ctx_ptr_var);
         let callee = self.module.declare_func_in_func(func_id, builder.func);
