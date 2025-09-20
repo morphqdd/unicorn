@@ -39,6 +39,57 @@ struct TranslationContext {
     block_counter: usize,
 }
 
+fn create_process(
+    module: &mut ObjectModule,
+    builder: &mut FunctionBuilder,
+    func_name: &str,
+) -> Value {
+    let target_type = module.target_config().pointer_type();
+    let buff = builder.ins().iconst(target_type, PROCESS_CTX_BUFFER_SIZE);
+    let after_call = builder.create_block();
+    builder.append_block_param(after_call, target_type);
+    call_malloc(module, builder, buff, after_call, &[]);
+    builder.switch_to_block(after_call);
+    builder.seal_block(after_call);
+    let ctx_ptr = *builder.block_params(after_call).first().unwrap();
+
+    let after_call = builder.create_block();
+    builder.append_block_param(after_call, target_type);
+    let buff = builder.ins().iconst(target_type, 0);
+    call_malloc(module, builder, buff, after_call, &[]);
+    builder.switch_to_block(after_call);
+    builder.seal_block(after_call);
+
+    let vars_ptr = *builder.block_params(after_call).first().unwrap();
+    let len = builder.ins().iconst(target_type, 0);
+    let zero = builder.ins().iconst(target_type, 0);
+
+    builder
+        .ins()
+        .store(MemFlags::new(), vars_ptr, ctx_ptr, PROCESS_CTX_VARS);
+    builder
+        .ins()
+        .store(MemFlags::new(), len, ctx_ptr, PROCESS_CTX_VARS_LEN);
+    builder
+        .ins()
+        .store(MemFlags::new(), zero, ctx_ptr, PROCESS_CTX_TEMP_VAL);
+
+    let mut wp = Whirlpool::new();
+    Digest::update(&mut wp, func_name);
+    let ident = Base64::encode_string(&wp.finalize());
+
+    let (func_id, _, _) = FUNCTIONS.with(|map| *map.borrow().get(&ident).unwrap());
+
+    let callee = module.declare_func_in_func(func_id, builder.func);
+    let func_addr = builder.ins().func_addr(target_type, callee);
+
+    builder
+        .ins()
+        .store(MemFlags::new(), func_addr, ctx_ptr, PROCESS_CTX_FUNC_ADDR);
+
+    ctx_ptr
+}
+
 pub struct Compiler {
     module: ObjectModule,
 }
@@ -142,34 +193,7 @@ impl Compiler {
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
 
-        let buff = builder.ins().iconst(target_type, PROCESS_CTX_BUFFER_SIZE);
-        let after_call = builder.create_block();
-        builder.append_block_param(after_call, target_type);
-        call_malloc(&mut self.module, &mut builder, buff, after_call, &[]);
-        builder.switch_to_block(after_call);
-        builder.seal_block(after_call);
-        let ctx_ptr = *builder.block_params(after_call).first().unwrap();
-
-        let after_call = builder.create_block();
-        builder.append_block_param(after_call, target_type);
-        let buff = builder.ins().iconst(target_type, 0);
-        call_malloc(&mut self.module, &mut builder, buff, after_call, &[]);
-        builder.switch_to_block(after_call);
-        builder.seal_block(after_call);
-
-        let vars_ptr = *builder.block_params(after_call).first().unwrap();
-        let len = builder.ins().iconst(target_type, 0);
-        let zero = builder.ins().iconst(target_type, 0);
-
-        builder
-            .ins()
-            .store(MemFlags::new(), vars_ptr, ctx_ptr, PROCESS_CTX_VARS);
-        builder
-            .ins()
-            .store(MemFlags::new(), len, ctx_ptr, PROCESS_CTX_VARS_LEN);
-        builder
-            .ins()
-            .store(MemFlags::new(), zero, ctx_ptr, PROCESS_CTX_TEMP_VAL);
+        let main_process_ctx = create_process(&mut self.module, &mut builder, "main");
 
         let while_block_entry = builder.create_block();
         let condition_block = builder.create_block();
@@ -177,7 +201,7 @@ impl Compiler {
         let exit_block = builder.create_block();
 
         let ctx_ptr_var = builder.declare_var(target_type);
-        builder.def_var(ctx_ptr_var, ctx_ptr);
+        builder.def_var(ctx_ptr_var, main_process_ctx);
         builder.ins().jump(while_block_entry, &[]);
 
         builder.switch_to_block(while_block_entry);
@@ -197,15 +221,12 @@ impl Compiler {
         builder.switch_to_block(action_block);
         builder.seal_block(action_block);
 
-        let mut wp = Whirlpool::new();
-        Digest::update(&mut wp, "main");
-        let ident = Base64::encode_string(&wp.finalize());
-
-        let (func_id, _, _) = FUNCTIONS.with(|map| *map.borrow().get(&ident).unwrap());
-
         let ctx_ptr = builder.use_var(ctx_ptr_var);
-        let callee = self.module.declare_func_in_func(func_id, builder.func);
-        let callee = builder.ins().func_addr(target_type, callee);
+
+        let callee =
+            builder
+                .ins()
+                .load(target_type, MemFlags::new(), ctx_ptr, PROCESS_CTX_FUNC_ADDR);
 
         let next_block = builder.use_var(next_block_var);
 
@@ -467,10 +488,10 @@ impl Compiler {
                     .store(MemFlags::new(), res, ctx_ptr, PROCESS_CTX_TEMP_VAL);
 
                 /*let deps_ptr = builder.ins().load(
-                    target_type,
-                    MemFlags::new(),
-                    ctx_ptr,
-                    PROCESS_CTX_DEPENDENCIES,
+                target_type,
+                MemFlags::new(),
+                ctx_ptr,
+                PROCESS_CTX_DEPENDENCIES,
                 );*/
 
                 let block_count = translation_ctx.block_counter;
