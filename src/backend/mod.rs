@@ -4,7 +4,7 @@ use cranelift::{
     codegen::{Context, ir::BlockArg},
     frontend::Switch,
     module::{FuncId, Linkage, Module, default_libcall_names},
-    native,
+    native::{self, builder},
     object::{ObjectBuilder, ObjectModule},
     prelude::{
         AbiParam, Block, Configurable, EntityRef, FunctionBuilder, FunctionBuilderContext,
@@ -17,19 +17,30 @@ use whirlpool::{Digest, Whirlpool};
 
 use crate::{
     frontend::parser::{ast::expr::Expr, parser},
-    general_compiler::call_malloc,
+    general_compiler::{call_free, call_malloc},
+    middleware::{Expression, Expressions},
 };
 
-const PROCESS_CTX_BUFFER_SIZE: i64 = 40;
+const PROCESS_CTX_BUFFER_SIZE: i64 = 48;
 const PROCESS_CTX_VARS: i32 = 0;
 const PROCESS_CTX_VARS_LEN: i32 = 8;
 const PROCESS_CTX_FUNC_ADDR: i32 = 16;
 const PROCESS_CTX_TEMP_VAL: i32 = 24;
 const PROCESS_CTX_DEPENDENCIES: i32 = 32;
+const PROCESS_CTX_CALL_ARGS_TEMP: i32 = 40;
+
+const RUNTIME_BUFFER_SIZE: i64 = 40;
 
 thread_local! {
     pub static FUNCTIONS: Rc<RefCell<HashMap<String, (FuncId, usize, usize)>>>
     = Rc::new(RefCell::new(HashMap::new()));
+}
+
+#[derive(Default, Clone, Copy)]
+enum TranslationType {
+    #[default]
+    Default,
+    Call(usize),
 }
 
 #[derive(Default)]
@@ -37,6 +48,7 @@ struct TranslationContext {
     variables: HashMap<String, usize>,
     var_counter: usize,
     block_counter: usize,
+    tr_type: TranslationType,
 }
 
 fn create_process(
@@ -105,7 +117,7 @@ impl Default for Compiler {
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .unwrap();
-        let builder = ObjectBuilder::new(isa, "test", default_libcall_names()).unwrap();
+        let builder = ObjectBuilder::new(isa, "module", default_libcall_names()).unwrap();
         let module = ObjectModule::new(builder);
 
         Self { module }
@@ -114,8 +126,12 @@ impl Default for Compiler {
 
 impl Compiler {
     pub fn compile<P: AsRef<Path>>(mut self, input: &str, path: P) -> Result<()> {
-        let expressions = parser::exprs(input)?;
-        self.translate(expressions)?;
+        let frontend_ast = parser::exprs(input)?;
+
+        let middleware_ast = Expressions::from(frontend_ast);
+        println!("{middleware_ast:#?}");
+
+        self.translate(middleware_ast)?;
         let obj = self.module.finish();
         let obj_bytes = obj.emit()?;
 
@@ -160,18 +176,48 @@ impl Compiler {
                 (callee_add, add_sig.params.len(), add_sig.returns.len()),
             )
         });
+        
+        let mut now_sig = self.module.make_signature();
+        now_sig.returns.push(AbiParam::new(target_type));
+        let callee_now = self
+            .module
+            .declare_function("now", Linkage::Import, &now_sig)?;
+        let mut wp = Whirlpool::new();
+        Digest::update(&mut wp, "now");
+        let name = Base64::encode_string(&wp.finalize());
+        FUNCTIONS.with(|map| {
+            map.borrow_mut().insert(
+                name,
+                (callee_now, now_sig.params.len(), now_sig.returns.len()),
+            )
+        });
 
+        let mut elapsed_sig = self.module.make_signature();
+        elapsed_sig.params.push(AbiParam::new(target_type));
+        elapsed_sig.returns.push(AbiParam::new(target_type));
+        let callee_elapsed = self
+            .module
+            .declare_function("elapsed", Linkage::Import, &elapsed_sig)?;
+        let mut wp = Whirlpool::new();
+        Digest::update(&mut wp, "elapsed");
+        let name = Base64::encode_string(&wp.finalize());
+        FUNCTIONS.with(|map| {
+            map.borrow_mut().insert(
+                name,
+                (callee_elapsed, elapsed_sig.params.len(), elapsed_sig.returns.len()),
+            )
+        });
         Ok(())
     }
 
-    pub fn translate(&mut self, expressions: Vec<Expr>) -> Result<()> {
+    pub fn translate(&mut self, expressions: Expressions) -> Result<()> {
         let target_type = self.module.target_config().pointer_type();
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut ctx = self.module.make_context();
 
         self.declare_runtime_funcitons()?;
 
-        for expression in expressions {
+        for expression in expressions.0 {
             self.translate_function(expression, &mut builder_ctx, &mut ctx)?;
         }
 
@@ -192,6 +238,27 @@ impl Compiler {
         let entry_block = builder.create_block();
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
+
+        let runtime_process_array_size = builder.ins().iconst(target_type, RUNTIME_BUFFER_SIZE);
+        let runtime_process_array_len = builder.ins().iconst(target_type, 5);
+        let runtime_process_len_var = builder.declare_var(target_type);
+        builder.def_var(runtime_process_len_var, runtime_process_array_len);
+
+        let after_call = builder.create_block();
+        builder.append_block_param(after_call, target_type);
+        call_malloc(
+            &mut self.module,
+            &mut builder,
+            runtime_process_array_size,
+            after_call,
+            &[],
+        );
+        builder.switch_to_block(after_call);
+        builder.seal_block(after_call);
+
+        let runtime_ptr = *builder.block_params(after_call).first().unwrap();
+        let runtime_var = builder.declare_var(target_type);
+        builder.def_var(runtime_var, runtime_ptr);
 
         let main_process_ctx = create_process(&mut self.module, &mut builder, "main");
 
@@ -265,7 +332,7 @@ impl Compiler {
 
     pub fn translate_function(
         &mut self,
-        expression: Expr,
+        expression: Expression,
         builder_ctx: &mut FunctionBuilderContext,
         ctx: &mut Context,
     ) -> Result<FuncId> {
@@ -273,15 +340,15 @@ impl Compiler {
         let mut builder = FunctionBuilder::new(&mut ctx.func, builder_ctx);
         let mut translation_ctx = TranslationContext::default();
 
-        let Expr::Function {
-            name,
-            function_ty,
-            body,
-        } = expression
-        else {
+        let Expression::Function { name, body, .. } = expression else {
             bail!("Not a function!")
         };
 
+        builder
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(target_type));
         builder
             .func
             .signature
@@ -304,25 +371,31 @@ impl Compiler {
         let trap_block = builder.create_block();
         builder.append_block_param(block0, target_type);
         builder.append_block_param(block0, target_type);
+        builder.append_block_param(block0, target_type);
 
         builder.switch_to_block(block0);
 
         let block_index = *builder.block_params(block0).first().unwrap();
         let ctx_ptr = *builder.block_params(block0).get(1).unwrap();
+        let runtime_ptr = *builder.block_params(block0).get(2).unwrap();
 
         let ctx_ptr_var = builder.declare_var(target_type);
         builder.def_var(ctx_ptr_var, ctx_ptr);
+
+        let runtime_var = builder.declare_var(target_type);
+        builder.def_var(runtime_var, runtime_ptr);
 
         builder.ins().jump(switch_block, &[]);
 
         let mut switch = Switch::new();
 
         let mut last_block_i = 0;
-        for expression in body {
+        for expression in body.0 {
             let (indecies, last_block, blocks) = self.translate_expression(
                 expression,
                 &mut builder,
                 ctx_ptr_var,
+                runtime_var,
                 &mut translation_ctx,
             )?;
 
@@ -353,7 +426,7 @@ impl Compiler {
 
         let mut wp = Whirlpool::default();
 
-        let Expr::Ident(name) = *name else {
+        let Expression::Ident(name) = *name else {
             bail!("Not a ident")
         };
 
@@ -380,23 +453,40 @@ impl Compiler {
 
     fn translate_expression(
         &mut self,
-        expression: Expr,
+        expression: Expression,
         builder: &mut FunctionBuilder,
         ctx_ptr_var: Variable,
+        runtime_var: Variable,
         translation_ctx: &mut TranslationContext,
     ) -> Result<(Vec<usize>, usize, Vec<Block>)> {
         let target_type = self.module.target_config().pointer_type();
         match expression {
-            Expr::Lit(lit) => {
+            Expression::Lit(lit) => {
                 let b = builder.create_block();
                 builder.switch_to_block(b);
                 let ctx_ptr: Value = builder.use_var(ctx_ptr_var);
-                let lit_num: i64 = lit.parse()?;
+                let lit_num: i64 = lit;
 
                 let imm = builder.ins().iconst(target_type, lit_num);
-                builder
-                    .ins()
-                    .store(MemFlags::new(), imm, ctx_ptr, PROCESS_CTX_TEMP_VAL);
+
+                match translation_ctx.tr_type {
+                    TranslationType::Default => {
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), imm, ctx_ptr, PROCESS_CTX_TEMP_VAL);
+                    }
+                    TranslationType::Call(arg_i) => {
+                        let args_ptr = builder.ins().load(
+                            target_type,
+                            MemFlags::new(),
+                            ctx_ptr,
+                            PROCESS_CTX_CALL_ARGS_TEMP,
+                        );
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), imm, args_ptr, (arg_i * 8) as i32);
+                    }
+                }
 
                 let block_count = translation_ctx.block_counter;
 
@@ -407,7 +497,7 @@ impl Compiler {
 
                 Ok((vec![block_count], translation_ctx.block_counter, vec![b]))
             }
-            Expr::Ident(name) => {
+            Expression::Ident(name) => {
                 let b = builder.create_block();
                 builder.switch_to_block(b);
                 let ctx_ptr: Value = builder.use_var(ctx_ptr_var);
@@ -426,9 +516,25 @@ impl Compiler {
                 let val = builder
                     .ins()
                     .load(target_type, MemFlags::new(), ptr_with_offset, 0);
-                builder
-                    .ins()
-                    .store(MemFlags::new(), val, ctx_ptr, PROCESS_CTX_TEMP_VAL);
+
+                match translation_ctx.tr_type {
+                    TranslationType::Default => {
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), val, ctx_ptr, PROCESS_CTX_TEMP_VAL);
+                    }
+                    TranslationType::Call(arg_i) => {
+                        let args_ptr = builder.ins().load(
+                            target_type,
+                            MemFlags::new(),
+                            ctx_ptr,
+                            PROCESS_CTX_CALL_ARGS_TEMP,
+                        );
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), val, args_ptr, (arg_i * 8) as i32);
+                    }
+                }
 
                 let block_count = translation_ctx.block_counter;
 
@@ -439,26 +545,64 @@ impl Compiler {
 
                 Ok((vec![block_count], translation_ctx.block_counter, vec![b]))
             }
-            Expr::Call { ident, args } => {
+            Expression::BeforeCall(args_len) => {
+                let b = builder.create_block();
+                builder.switch_to_block(b);
+                let after_call = builder.create_block();
+                builder.append_block_param(after_call, target_type);
+                let buffer_size = builder.ins().iconst(target_type, (args_len * 8) as i64);
+                call_malloc(&mut self.module, builder, buffer_size, after_call, &[]);
+                builder.switch_to_block(after_call);
+                let args_ptr = *builder.block_params(after_call).first().unwrap();
+
+                let ctx_ptr = builder.use_var(ctx_ptr_var);
+                builder.ins().store(
+                    MemFlags::new(),
+                    args_ptr,
+                    ctx_ptr,
+                    PROCESS_CTX_CALL_ARGS_TEMP,
+                );
+
+                let block_count = translation_ctx.block_counter;
+
+                let block_count_val = builder.ins().iconst(target_type, (block_count + 1) as i64);
+                builder.ins().return_(&[block_count_val]);
+
+                translation_ctx.block_counter += 1;
+
+                Ok((vec![block_count], translation_ctx.block_counter, vec![b]))
+            }
+            Expression::Call { ident, args } => {
                 let mut indecies = vec![];
                 let mut blocks = vec![];
-                for expression in args {
+                let args_len = args.0.len();
+                for (i, expression) in args.0.into_iter().enumerate() {
+                    translation_ctx.tr_type = TranslationType::Call(i);
                     let (indecies_, last_block_, blocks_) = self.translate_expression(
                         expression,
                         builder,
                         ctx_ptr_var,
+                        runtime_var,
                         translation_ctx,
                     )?;
                     indecies = [indecies, indecies_].concat();
                     blocks = [blocks, blocks_].concat();
                 }
-
+                translation_ctx.tr_type = TranslationType::Default;
                 let b = builder.create_block();
                 builder.switch_to_block(b);
+
                 let ctx_ptr = builder.use_var(ctx_ptr_var);
+                let args_ptr = builder.ins().load(
+                    target_type,
+                    MemFlags::new(),
+                    ctx_ptr,
+                    PROCESS_CTX_CALL_ARGS_TEMP,
+                );
+
                 let mut wp = Whirlpool::new();
 
-                let Expr::Ident(name) = *ident else {
+                let Expression::Ident(name) = *ident else {
                     bail!("Not a ident")
                 };
 
@@ -478,14 +622,34 @@ impl Compiler {
                 let callee = self.module.declare_func_in_func(func_id, builder.func);
                 let callee = builder.ins().func_addr(target_type, callee);
                 let sig_ref = builder.import_signature(sig);
-                let _99 = builder.ins().iconst(target_type, 20);
-                let call = builder.ins().call_indirect(sig_ref, callee, &[_99, _99]);
 
-                let res = *builder.inst_results(call).first().unwrap();
+                let mut args_vals = Vec::with_capacity(args_len);
 
+                for i in 0..args_len {
+                    args_vals.push(builder.ins().load(
+                        target_type,
+                        MemFlags::new(),
+                        args_ptr,
+                        (i * 8) as i32,
+                    ));
+                }
+
+                let call = builder.ins().call_indirect(sig_ref, callee, &args_vals);
+
+                call_free(&mut self.module, builder, args_ptr);
+                let zero = builder.ins().iconst(target_type, 0);
                 builder
                     .ins()
-                    .store(MemFlags::new(), res, ctx_ptr, PROCESS_CTX_TEMP_VAL);
+                    .store(MemFlags::new(), zero, ctx_ptr, PROCESS_CTX_CALL_ARGS_TEMP);
+
+                let res: Option<&Value> = builder.inst_results(call).first(); 
+                if let Some(res) = res {
+                    let res = *res;
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), res, ctx_ptr, PROCESS_CTX_TEMP_VAL);
+                }
+
 
                 /*let deps_ptr = builder.ins().load(
                 target_type,
@@ -507,15 +671,23 @@ impl Compiler {
                     [blocks, vec![b]].concat(),
                 ))
             }
-            Expr::Function {
+            Expression::Function {
                 name,
                 function_ty,
                 body,
             } => todo!(),
-            Expr::FunctionType { params, ret_ty } => todo!(),
-            Expr::Assign((name, _), expr) => {
-                let (indecies, block_index, blocks) =
-                    self.translate_expression(*expr, builder, ctx_ptr_var, translation_ctx)?;
+            Expression::FunctionType { params, ret_ty } => todo!(),
+            Expression::Assign((name, _), expr) => {
+                let tr_type = translation_ctx.tr_type;
+                translation_ctx.tr_type = TranslationType::Default;
+                let (indecies, block_index, blocks) = self.translate_expression(
+                    *expr,
+                    builder,
+                    ctx_ptr_var,
+                    runtime_var,
+                    translation_ctx,
+                )?;
+                translation_ctx.tr_type = tr_type;
                 let b = builder.create_block();
                 builder.switch_to_block(b);
 
@@ -570,12 +742,25 @@ impl Compiler {
                 builder
                     .ins()
                     .store(MemFlags::new(), val, ptr_with_offset, 0);
+
+                if let TranslationType::Call(arg_i) = translation_ctx.tr_type {
+                    let args_ptr = builder.ins().load(
+                        target_type,
+                        MemFlags::new(),
+                        ctx_ptr,
+                        PROCESS_CTX_CALL_ARGS_TEMP,
+                    );
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), val, args_ptr, (arg_i * 8) as i32);
+                }
+
                 let next_block = builder
                     .ins()
                     .iconst(target_type, (translation_ctx.block_counter + 1) as i64);
                 builder.ins().return_(&[next_block]);
 
-                let Expr::Ident(name) = *name else {
+                let Expression::Ident(name) = *name else {
                     bail!("Not a ident")
                 };
 
@@ -591,7 +776,57 @@ impl Compiler {
                     [blocks, vec![b]].concat(),
                 ))
             }
-            Expr::GlobalDataAddr(expr) => todo!(),
+            Expression::Block(body) => {
+                let mut indecies = vec![];
+                let mut blocks = vec![];
+                for expression in body.0 {
+                    let (indecies_, last_block_, blocks_) = self.translate_expression(
+                        expression,
+                        builder,
+                        ctx_ptr_var,
+                        runtime_var,
+                        translation_ctx,
+                    )?;
+                    indecies = [indecies, indecies_].concat();
+                    blocks = [blocks, blocks_].concat();
+                }
+                let b = builder.create_block();
+                builder.switch_to_block(b);
+
+                let ctx_ptr = builder.use_var(ctx_ptr_var);
+
+                if let TranslationType::Call(arg_i) = translation_ctx.tr_type {
+                    let res_of_block = builder.ins().load(
+                        target_type,
+                        MemFlags::new(),
+                        ctx_ptr,
+                        PROCESS_CTX_TEMP_VAL,
+                    );
+                    let args_ptr = builder.ins().load(
+                        target_type,
+                        MemFlags::new(),
+                        ctx_ptr,
+                        PROCESS_CTX_CALL_ARGS_TEMP,
+                    );
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), res_of_block, args_ptr, (arg_i * 8) as i32);
+                }
+
+                let block_count = translation_ctx.block_counter;
+
+                let block_count_val = builder.ins().iconst(target_type, (block_count + 1) as i64);
+                builder.ins().return_(&[block_count_val]);
+
+                translation_ctx.block_counter += 1;
+
+                Ok((
+                    [indecies, vec![block_count]].concat(),
+                    translation_ctx.block_counter,
+                    [blocks, vec![b]].concat(),
+                ))
+            }
+            _ => unimplemented!(),
         }
     }
 }

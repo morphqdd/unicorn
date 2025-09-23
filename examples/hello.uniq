@@ -1,8 +1,20 @@
 main: -> i64 {
-  let b: i64 = 20
-  b
+  let start: i64 = now{}
+
+  let a: i64 = 20
+  let b: i64 = 30
+  let a: i64 = add { a b }
+  let b: i64 = add { a a }
+  let a: i64 = add { a b }
+  let b: i64 = add { a a }
+  let a: i64 = add { a b }
+  let b: i64 = add { a a }
+  let a: i64 = add { a b }
+  let b: i64 = add { a a }
+  
+  let end: i64 = elapsed{start}
+  stdprint{end}
+  end
 }
 
-foo: -> i64 {
-  30
-}
+

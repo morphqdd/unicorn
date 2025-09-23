@@ -17,7 +17,7 @@ fn main() -> Result<()> {
             "-Wl,-s",
             "-fuse-ld=mold",
             &out.join("obj.o").display().to_string(),
-            //            &out.join("runtime.o").display().to_string(),
+            &out.join("runtime.o").display().to_string(),
             "-o",
             &out.join("aot-test").display().to_string(),
         ])
