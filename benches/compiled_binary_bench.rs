@@ -16,7 +16,7 @@ fn bench_aot_binary(c: &mut Criterion) {
         });
     });
 
-    println!("Average time: {} mcs", time_sum as f64 /time_count as f64 )
+    println!("Average time: {} mcs", time_sum as f64 / time_count as f64)
 }
 
 criterion_group!(benches, bench_aot_binary);

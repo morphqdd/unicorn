@@ -176,7 +176,7 @@ impl Compiler {
                 (callee_add, add_sig.params.len(), add_sig.returns.len()),
             )
         });
-        
+
         let mut now_sig = self.module.make_signature();
         now_sig.returns.push(AbiParam::new(target_type));
         let callee_now = self
@@ -195,16 +195,20 @@ impl Compiler {
         let mut elapsed_sig = self.module.make_signature();
         elapsed_sig.params.push(AbiParam::new(target_type));
         elapsed_sig.returns.push(AbiParam::new(target_type));
-        let callee_elapsed = self
-            .module
-            .declare_function("elapsed", Linkage::Import, &elapsed_sig)?;
+        let callee_elapsed =
+            self.module
+                .declare_function("elapsed", Linkage::Import, &elapsed_sig)?;
         let mut wp = Whirlpool::new();
         Digest::update(&mut wp, "elapsed");
         let name = Base64::encode_string(&wp.finalize());
         FUNCTIONS.with(|map| {
             map.borrow_mut().insert(
                 name,
-                (callee_elapsed, elapsed_sig.params.len(), elapsed_sig.returns.len()),
+                (
+                    callee_elapsed,
+                    elapsed_sig.params.len(),
+                    elapsed_sig.returns.len(),
+                ),
             )
         });
         Ok(())
@@ -642,14 +646,13 @@ impl Compiler {
                     .ins()
                     .store(MemFlags::new(), zero, ctx_ptr, PROCESS_CTX_CALL_ARGS_TEMP);
 
-                let res: Option<&Value> = builder.inst_results(call).first(); 
+                let res: Option<&Value> = builder.inst_results(call).first();
                 if let Some(res) = res {
                     let res = *res;
                     builder
                         .ins()
                         .store(MemFlags::new(), res, ctx_ptr, PROCESS_CTX_TEMP_VAL);
                 }
-
 
                 /*let deps_ptr = builder.ins().load(
                 target_type,
@@ -808,9 +811,12 @@ impl Compiler {
                         ctx_ptr,
                         PROCESS_CTX_CALL_ARGS_TEMP,
                     );
-                    builder
-                        .ins()
-                        .store(MemFlags::new(), res_of_block, args_ptr, (arg_i * 8) as i32);
+                    builder.ins().store(
+                        MemFlags::new(),
+                        res_of_block,
+                        args_ptr,
+                        (arg_i * 8) as i32,
+                    );
                 }
 
                 let block_count = translation_ctx.block_counter;
